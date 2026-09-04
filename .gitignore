@@ -17,3 +17,10 @@ test-results/
 drizzle/meta/_journal.json.bak
 .drizzle/
 .scratch/
+
+# Playwright run output. It changes on every run and records timings from whichever
+# environment happened to be tested, so committing it produces noisy diffs that say
+# nothing about the code.
+e2e/results.json
+e2e/test-results/
+e2e/playwright-report/
