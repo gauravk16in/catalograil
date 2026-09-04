@@ -4,6 +4,7 @@ packages:
   - 'services/workers/*'
   - 'apps/*'
   - 'infra'
+  - 'e2e'
 
 allowBuilds:
   esbuild: true

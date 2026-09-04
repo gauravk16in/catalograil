@@ -287,6 +287,21 @@ export class ApiStack extends Stack {
     });
 
     /**
+     * The merchant dashboard's "Preview in AI" (T1.25), behind the merchant pool.
+     *
+     * It runs the same search a buyer gets, so it must not be a different implementation —
+     * a preview that ranks differently from the real thing is worse than no preview. It
+     * needs its own route because `/internal/*` is SigV4-only and a browser cannot sign,
+     * which is why the preview page could not work at all.
+     */
+    this.api.addRoutes({
+      path: '/merchant/search-preview',
+      methods: [apigw.HttpMethod.POST],
+      integration: new HttpLambdaIntegration('PreviewIntegration', internalApi),
+      authorizer: merchantAuthorizer,
+    });
+
+    /**
      * Buyer-facing search, behind the buyer pool.
      *
      * The same Lambda as `/internal/search`: the query path is identical and duplicating

@@ -95,13 +95,13 @@ export default function PreviewPage() {
        * the constraints are what excluded it, and comparing the two says which.
        */
       const [everyone, mine] = await Promise.all([
-        api.post<SearchResponse>('/internal/search', {
+        api.post<SearchResponse>('/merchant/search-preview', {
           query,
           filters,
           limit: 20,
           source: 'dashboard',
         }),
-        api.post<SearchResponse>('/internal/search', {
+        api.post<SearchResponse>('/merchant/search-preview', {
           query,
           // Restricted to this merchant and stripped of the shopper's constraints, so the
           // diagnosis below can tell "excluded by a filter" from "not relevant enough".

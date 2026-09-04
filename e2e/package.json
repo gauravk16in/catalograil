@@ -1,0 +1,17 @@
+{
+  "name": "@catalograil/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:api": "playwright test tests/api",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "install:browsers": "playwright install --with-deps chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.1",
+    "aws-amplify": "^6.0.0",
+    "typescript": "^5.7.2"
+  }
+}
