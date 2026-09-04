@@ -1,11 +1,20 @@
 import { Logger } from '@aws-lambda-powertools/logger';
-import { AppError, systemClock } from '@catalograil/core';
+import { AppError, requireMerchant, systemClock } from '@catalograil/core';
 import { getDb } from '@catalograil/db';
 import { S3ObjectStore } from '@catalograil/aws';
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { createUpload, getTemplate, type UploadDeps } from './handlers/uploads.js';
 import { deepHealth, shallowHealth } from './handlers/health.js';
 import { getProduct, listIngestionJobs, listProducts } from './handlers/lists.js';
+import {
+  connectPaymentConfig,
+  disconnectPaymentConfig,
+  readPaymentConfig,
+  testWebhook,
+  webhookUrlFor,
+  type PaymentConfigDeps,
+} from './handlers/payment-config.js';
+import { KmsTokenCipher } from '@catalograil/razorpay';
 import { getSession } from './handlers/session.js';
 import {
   archiveProduct,
@@ -35,12 +44,14 @@ function deps(): UploadDeps {
 /**
  * Merchant HTTP API.
  *
- * **The caller's merchant identity is not yet authenticated.** T1.6 replaces this with a
- * session derived from the Razorpay OAuth flow; until then the routes sit behind IAM
- * authorization at the gateway, because `uploadKey` derives an S3 prefix from the merchant
- * id — trusting a client-supplied one would let any caller write into any merchant's
- * prefix. The header read below is a development affordance behind that gate, not an
- * authentication mechanism, and the gateway is what makes it safe.
+ * Every route below `/merchant` is authenticated by the merchant Cognito pool's JWT
+ * authorizer at the gateway, and the caller's identity comes from the validated claim
+ * rather than from anything in the request. That matters most for `POST /merchant/uploads`,
+ * which derives an S3 prefix from the merchant id: a client-supplied id there would let
+ * any caller write into any merchant's prefix.
+ *
+ * `/health` is the one unauthenticated route, and it deliberately returns nothing that
+ * belongs to anybody.
  */
 export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
   const correlationId = event.requestContext.requestId;
@@ -137,6 +148,31 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       }
     }
 
+    // ── Razorpay connection (Block C) ───────────────────────────────────────────
+
+    if (path === '/merchant/payment-config') {
+      const merchantId = requireMerchantId(event);
+
+      if (method === 'GET') {
+        const config = await readPaymentConfig(deps().db, merchantId);
+        return json(200, {
+          ...config,
+          // The merchant needs this to register the webhook; it contains no secret.
+          webhookUrl: webhookUrlFor(process.env.API_BASE_URL ?? '', merchantId),
+        });
+      }
+      if (method === 'POST') {
+        return json(200, await connectPaymentConfig(paymentDeps(), merchantId, parseBody(event)));
+      }
+      if (method === 'DELETE') {
+        return json(200, await disconnectPaymentConfig(paymentDeps(), merchantId));
+      }
+    }
+
+    if (method === 'POST' && path === '/merchant/payment-config/test-webhook') {
+      return json(200, await testWebhook(paymentDeps(), requireMerchantId(event)));
+    }
+
     if (method === 'GET' && path === '/merchant/uploads') {
       return json(200, await listIngestionJobs(deps().db, requireMerchantId(event)));
     }
@@ -178,6 +214,28 @@ function parseBody(event: APIGatewayProxyEventV2): unknown {
   }
 }
 
+let cachedPaymentDeps: Omit<PaymentConfigDeps, 'cipherFor'> | undefined;
+
+/**
+ * Payment dependencies, with a cipher built per merchant.
+ *
+ * `KmsTokenCipher` binds the merchant id as KMS encryption context, so a ciphertext
+ * encrypted for one merchant cannot be decrypted while claiming to be another — swapping
+ * rows fails loudly instead of handing over someone else's credentials. That binding is
+ * why the cipher is a factory rather than a singleton.
+ */
+function paymentDeps(): PaymentConfigDeps {
+  if (!cachedPaymentDeps) {
+    cachedPaymentDeps = {
+      db: getDb(),
+      clock: systemClock,
+      stage: process.env.STAGE ?? 'dev',
+    };
+  }
+  const keyId = required('KMS_TOKEN_KEY_ID');
+  return { ...cachedPaymentDeps, cipherFor: (id) => new KmsTokenCipher(keyId, id) };
+}
+
 let cachedProductDeps: ProductDeps | undefined;
 
 /**
@@ -197,12 +255,17 @@ function productDeps(): ProductDeps {
   return cachedProductDeps;
 }
 
+/**
+ * The merchant this request is for, from the verified JWT claim.
+ *
+ * This used to read `x-merchant-id` from the headers. Any caller past the gateway could
+ * act as any merchant by editing one value — horizontal privilege escalation whose only
+ * mitigation was that IAM authorization kept browsers out entirely, which is also why the
+ * dashboards could not work. The claim is validated by API Gateway before this Lambda
+ * runs, and `requireMerchant` never consults the request for an identity.
+ */
 function requireMerchantId(event: APIGatewayProxyEventV2): string {
-  const merchantId = event.headers['x-merchant-id'];
-  if (!merchantId) {
-    throw new AppError('UNAUTHENTICATED', 'No merchant session. (T1.6 replaces this header.)');
-  }
-  return merchantId;
+  return requireMerchant(event as never).id;
 }
 
 function json(statusCode: number, body: unknown): APIGatewayProxyResultV2 {

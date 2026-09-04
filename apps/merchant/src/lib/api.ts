@@ -22,6 +22,18 @@ export function setAuthToken(token: string | null): void {
   authToken = token;
 }
 
+/**
+ * How the client gets a fresh token after a 401.
+ *
+ * Injected rather than imported, because the auth module imports this one — wiring it the
+ * other way would be a cycle. `AuthProvider` sets it on mount.
+ */
+let refreshToken: (() => Promise<string | null>) | null = null;
+
+export function setTokenRefresher(fn: (() => Promise<string | null>) | null): void {
+  refreshToken = fn;
+}
+
 export interface ApiError {
   readonly code: string;
   readonly message: string;
@@ -39,7 +51,7 @@ export class ApiRequestError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}, isRetry = false): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     /**
@@ -57,6 +69,22 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...init.headers,
     },
   });
+
+  /**
+   * One retry on 401, and exactly one.
+   *
+   * An access token expires while a dashboard tab sits open, and the next click should not
+   * throw the merchant back to a login screen. Retrying more than once turns a genuinely
+   * revoked session into a loop that hammers Cognito and never resolves, so a second 401
+   * is taken at face value.
+   */
+  if (response.status === 401 && refreshToken && !isRetry) {
+    const fresh = await refreshToken();
+    if (fresh) {
+      authToken = fresh;
+      return request<T>(path, init, true);
+    }
+  }
 
   const text = await response.text();
   const body = text ? (JSON.parse(text) as unknown) : null;

@@ -9,6 +9,7 @@ const LINKS = [
   { href: '/uploads', label: 'Uploads' },
   { href: '/policies', label: 'Policies' },
   { href: '/preview', label: 'Preview in AI' },
+  { href: '/settings/payments', label: 'Payments' },
 ];
 
 export function Nav() {

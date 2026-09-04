@@ -14,6 +14,17 @@ export const ERROR_CODES = [
   'OAUTH_EXCHANGE_FAILED',
   'MERCHANT_TOKEN_EXPIRED',
   'MERCHANT_SUSPENDED',
+  /** No Razorpay connection at all (S3.4). Distinct from one that exists and is bad. */
+  'PAYMENT_CONFIG_MISSING',
+  /** Credentials exist but did not verify, or Razorpay has since rejected them. */
+  'PAYMENT_CONFIG_INVALID',
+  /**
+   * A confirmed Cognito user whose post-confirmation trigger has not linked them to a
+   * merchant or buyer row yet. Deliberately not UNAUTHENTICATED: the client must not clear
+   * the session and bounce to the login screen, because signing in again yields the same
+   * token. Retrying is what resolves it.
+   */
+  'ACCOUNT_NOT_LINKED',
   // catalog / ingestion
   'CSV_HEADER_MISMATCH',
   'CSV_ROW_INVALID',

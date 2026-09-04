@@ -62,6 +62,8 @@ function defaultHttpStatus(code: ErrorCode): number {
     case 'INVALID_OAUTH_STATE':
       return 401;
     case 'FORBIDDEN':
+    case 'PAYMENT_CONFIG_MISSING':
+    case 'PAYMENT_CONFIG_INVALID':
     case 'MERCHANT_SUSPENDED':
     case 'MERCHANT_TOKEN_EXPIRED':
     case 'UNSUPPORTED_IN_PHASE_1':
@@ -71,6 +73,7 @@ function defaultHttpStatus(code: ErrorCode): number {
     case 'CONFLICT':
     case 'OUT_OF_STOCK':
     case 'PRICE_CHANGED':
+    case 'ACCOUNT_NOT_LINKED':
       return 409;
     case 'RATE_LIMITED':
       return 429;

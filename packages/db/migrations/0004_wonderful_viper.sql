@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "merchants_contact_email_key" ON "merchants" USING btree ("contact_email");

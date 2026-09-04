@@ -22,6 +22,27 @@
       "when": 1788533441026,
       "tag": "0002_denormalisation_sync",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788552058396,
+      "tag": "0003_next_jasper_sitwell",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788552750169,
+      "tag": "0004_wonderful_viper",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788554155622,
+      "tag": "0005_daily_lily_hollister",
+      "breakpoints": true
     }
   ]
 }
