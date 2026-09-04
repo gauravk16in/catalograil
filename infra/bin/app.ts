@@ -3,6 +3,7 @@ import { App } from 'aws-cdk-lib';
 import { resolveEnv, stackName } from '../lib/env.js';
 import { ApiStack } from '../stacks/api-stack.js';
 import { DataStack } from '../stacks/data-stack.js';
+import { FrontendStack } from '../stacks/frontend-stack.js';
 import { NetworkStack } from '../stacks/network-stack.js';
 import { QueueStack } from '../stacks/queue-stack.js';
 import { WorkerStack } from '../stacks/worker-stack.js';
@@ -55,7 +56,7 @@ new WorkerStack(app, stackName('Worker', config), {
   sesFromAddress,
 });
 
-new ApiStack(app, stackName('Api', config), {
+const api = new ApiStack(app, stackName('Api', config), {
   env,
   config,
   vpc: network.vpc,
@@ -63,5 +64,24 @@ new ApiStack(app, stackName('Api', config), {
   proxy: data.proxy,
   uploadsBucket: data.uploadsBucket,
 });
+
+/**
+ * Only created when a GitHub token secret is named. The dashboards are Git-connected, and
+ * a stack that cannot reach the repository would fail at deploy rather than at synth —
+ * making it opt-in keeps `cdk synth` working for everyone, including CI with no token.
+ */
+const githubTokenSecretName = process.env.GITHUB_TOKEN_SECRET_NAME;
+const githubRepository = process.env.GITHUB_REPOSITORY ?? 'gauravk16in/catalograil';
+
+if (githubTokenSecretName) {
+  new FrontendStack(app, stackName('Frontend', config), {
+    env,
+    config,
+    apiBaseUrl: api.api.apiEndpoint,
+    repository: githubRepository,
+    githubTokenSecretName,
+    ...(process.env.GITHUB_BRANCH ? { branch: process.env.GITHUB_BRANCH } : {}),
+  });
+}
 
 app.synth();
