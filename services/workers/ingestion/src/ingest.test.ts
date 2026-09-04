@@ -150,7 +150,6 @@ describe.skipIf(!DATABASE_URL)('ingestion worker', () => {
     expect(outcome.variantsUpserted).toBe(500);
     expect(elapsedMs).toBeLessThan(60_000);
 
-    // eslint-disable-next-line no-console
     console.log(`    500 rows imported in ${(elapsedMs / 1000).toFixed(2)}s`);
   }, 120_000);
 

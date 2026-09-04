@@ -15,6 +15,13 @@
       "when": 1788518647939,
       "tag": "0001_next_madripoor",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788533441026,
+      "tag": "0002_denormalisation_sync",
+      "breakpoints": true
     }
   ]
 }

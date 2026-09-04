@@ -29,13 +29,17 @@
     "@aws-lambda-powertools/logger": "^2.12.0",
     "@aws-lambda-powertools/metrics": "^2.12.0",
     "@aws-lambda-powertools/tracer": "^2.12.0",
-    "@types/aws-lambda": "^8.10.147"
+    "@types/aws-lambda": "^8.10.147",
+    "@anthropic-ai/sdk": "^0.71.0",
+    "drizzle-orm": "^0.38.2",
+    "@catalograil/aws": "workspace:*"
   },
   "devDependencies": {
     "@catalograil/config": "workspace:*",
     "@types/node": "^22.10.2",
     "eslint": "^9.17.0",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "postgres": "^3.4.5"
   }
 }
