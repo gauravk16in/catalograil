@@ -1,0 +1,8 @@
+node_modules
+dist
+.next
+.turbo
+cdk.out
+pnpm-lock.yaml
+# The planning documents are the user's own writing — leave their formatting alone.
+Razorpay Merchant Product Discovery/

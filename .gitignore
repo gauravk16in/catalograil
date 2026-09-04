@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+.next/
+out/
+.turbo/
+cdk.out/
+*.tsbuildinfo
+coverage/
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log
+playwright-report/
+test-results/
+drizzle/meta/_journal.json.bak

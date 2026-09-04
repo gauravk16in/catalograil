@@ -1,0 +1,44 @@
+{
+  "name": "@catalograil/api-merchant",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Merchant-facing Lambda handlers",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "lint": "eslint src --no-error-on-unmatched-pattern",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@catalograil/core": "workspace:*",
+    "@catalograil/db": "workspace:*",
+    "@catalograil/razorpay": "workspace:*",
+    "@aws-sdk/client-dynamodb": "^3.716.0",
+    "@aws-sdk/lib-dynamodb": "^3.716.0",
+    "@aws-sdk/client-s3": "^3.716.0",
+    "@aws-sdk/s3-request-presigner": "^3.716.0",
+    "@aws-sdk/client-sqs": "^3.716.0",
+    "@aws-lambda-powertools/logger": "^2.12.0",
+    "@aws-lambda-powertools/metrics": "^2.12.0",
+    "@aws-lambda-powertools/tracer": "^2.12.0",
+    "@types/aws-lambda": "^8.10.147"
+  },
+  "devDependencies": {
+    "@catalograil/config": "workspace:*",
+    "@types/node": "^22.10.2",
+    "eslint": "^9.17.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
