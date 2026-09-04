@@ -30,6 +30,14 @@ export class DataStack extends Stack {
   readonly cluster: rds.DatabaseCluster;
   readonly databaseSecurityGroup: ec2.SecurityGroup;
   readonly proxySecurityGroup: ec2.SecurityGroup;
+  /**
+   * The administrative path into the cluster, used by the migration Lambda only.
+   *
+   * Created here rather than in the worker stack that consumes it, for the same reason the
+   * other two are: an ingress rule added from another stack points that stack back at this
+   * one, and this one already depends on it.
+   */
+  readonly migrationSecurityGroup: ec2.SecurityGroup;
   readonly proxy: rds.DatabaseProxy;
   readonly tokenKey: kms.Key;
   readonly uploadsBucket: s3.Bucket;
@@ -56,6 +64,12 @@ export class DataStack extends Stack {
       allowAllOutbound: false,
     });
 
+    this.migrationSecurityGroup = new ec2.SecurityGroup(this, 'MigrationSecurityGroup', {
+      vpc,
+      description: 'Migration Lambda: direct cluster access for DDL',
+      allowAllOutbound: true,
+    });
+
     this.proxySecurityGroup.addIngressRule(
       props.lambdaSecurityGroup,
       ec2.Port.tcp(5432),
@@ -68,6 +82,14 @@ export class DataStack extends Stack {
       this.proxySecurityGroup,
       ec2.Port.tcp(5432),
       'Only RDS Proxy may connect to Aurora',
+    );
+
+    // The one exception, and it is deliberate: migrations run DDL and set up the IAM grant
+    // the proxy path depends on, so they cannot themselves go through the proxy.
+    this.databaseSecurityGroup.addIngressRule(
+      this.migrationSecurityGroup,
+      ec2.Port.tcp(5432),
+      'Migration Lambda runs DDL directly against the cluster',
     );
 
     // ── Aurora Serverless v2 ────────────────────────────────────────────────────

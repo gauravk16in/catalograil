@@ -5,7 +5,7 @@ import { and, eq } from 'drizzle-orm';
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { InMemoryMailer, InMemoryObjectStore, InMemoryQueue } from './adapters/memory.js';
+import { InMemoryMailer, InMemoryObjectStore, InMemoryQueue } from '@catalograil/aws';
 import { runIngestion, type IngestionDeps } from './ingest.js';
 
 /**

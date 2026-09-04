@@ -7,7 +7,7 @@ import {
 } from '@catalograil/core';
 import { getDb } from '@catalograil/db';
 import type { SQSBatchResponse, SQSEvent, SQSRecord } from 'aws-lambda';
-import { S3ObjectStore, SesMailer, SqsQueue } from './adapters/aws.js';
+import { S3ObjectStore, SesMailer, SqsQueue } from '@catalograil/aws';
 import { runIngestion, type IngestionDeps } from './ingest.js';
 
 const logger = new Logger({ serviceName: 'ingestion-worker' });

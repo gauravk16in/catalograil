@@ -30,6 +30,7 @@
     "tsx": "^4.19.2",
     "@aws-sdk/client-bedrock": "^3.716.0",
     "@aws-sdk/client-bedrock-runtime": "^3.716.0",
-    "@types/node": "^22.10.2"
+    "@types/node": "^22.10.2",
+    "esbuild": "^0.24.2"
   }
 }

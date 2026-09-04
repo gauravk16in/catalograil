@@ -3,4 +3,4 @@ export * from './stream.js';
 export * from './upsert.js';
 export * from './error-csv.js';
 export * from './email.js';
-export * from './adapters/memory.js';
+export * from '@catalograil/aws';

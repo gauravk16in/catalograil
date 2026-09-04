@@ -30,7 +30,8 @@
     "@catalograil/core": "workspace:*",
     "drizzle-orm": "^0.38.2",
     "postgres": "^3.4.5",
-    "@aws-sdk/rds-signer": "^3.716.0"
+    "@aws-sdk/rds-signer": "^3.716.0",
+    "@aws-sdk/client-secrets-manager": "^3.716.0"
   },
   "devDependencies": {
     "@catalograil/config": "workspace:*",

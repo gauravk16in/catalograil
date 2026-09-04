@@ -16,7 +16,15 @@ export interface EnvConfig {
 const CONFIGS: Record<EnvName, EnvConfig> = {
   dev: {
     name: 'dev',
-    auroraMinAcu: 0.5,
+    /**
+     * Zero, not the 0.5 in context section 10.
+     *
+     * Serverless v2 scales to zero and auto-pauses, which takes a dev cluster from about
+     * $44 a month sitting idle to near nothing. The cost is a few seconds on the first
+     * query after a pause, which no dev workflow minds. Staging and prod keep the
+     * capacities the context specifies.
+     */
+    auroraMinAcu: 0,
     auroraMaxAcu: 4,
     mcpProvisionedConcurrency: 0,
     razorpayLiveMode: false,

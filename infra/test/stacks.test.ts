@@ -5,6 +5,8 @@ import { resolveEnv, stackName } from '../lib/env.js';
 import { DataStack } from '../stacks/data-stack.js';
 import { NetworkStack } from '../stacks/network-stack.js';
 import { QUEUE_NAMES, QueueStack } from '../stacks/queue-stack.js';
+import { ApiStack } from '../stacks/api-stack.js';
+import { WorkerStack } from '../stacks/worker-stack.js';
 
 /**
  * `cdk deploy` needs credentials this environment does not have, so these assertions stand
@@ -32,12 +34,121 @@ function synth(env: 'dev' | 'prod' = 'dev') {
     ingestionQueueArn: queues.queues.ingestion.queueArn,
   });
 
+  const workers = new WorkerStack(app, stackName('Worker', config), {
+    env: awsEnv,
+    config,
+    vpc: network.vpc,
+    lambdaSecurityGroup: network.lambdaSecurityGroup,
+    migrationSecurityGroup: data.migrationSecurityGroup,
+    proxy: data.proxy,
+    cluster: data.cluster,
+    queues: queues.queues,
+    uploadsBucket: data.uploadsBucket,
+    exportsBucket: data.exportsBucket,
+    sesFromAddress: 'no-reply@example.com',
+  });
+
+  const api = new ApiStack(app, stackName('Api', config), {
+    env: awsEnv,
+    config,
+    vpc: network.vpc,
+    lambdaSecurityGroup: network.lambdaSecurityGroup,
+    proxy: data.proxy,
+    uploadsBucket: data.uploadsBucket,
+  });
+
   return {
     network: Template.fromStack(network),
     queues: Template.fromStack(queues),
     data: Template.fromStack(data),
+    workers: Template.fromStack(workers),
+    api: Template.fromStack(api),
   };
 }
+
+describe('worker stack', () => {
+  let templates: ReturnType<typeof synth>;
+  beforeAll(() => {
+    templates = synth();
+  });
+
+  it('runs every function on ARM64 and a supported runtime', () => {
+    const fns = templates.workers.findResources('AWS::Lambda::Function');
+    const ours = Object.values(fns).filter((f) => f.Properties?.Handler === 'index.handler');
+    expect(ours.length).toBeGreaterThanOrEqual(3);
+
+    for (const fn of ours) {
+      expect(fn.Properties?.Architectures).toEqual(['arm64']);
+      // nodejs20.x is deprecated and stops accepting new functions in Feb 2027.
+      expect(fn.Properties?.Runtime).toBe('nodejs22.x');
+    }
+  });
+
+  it('reports partial batch failures on every queue consumer', () => {
+    const sources = templates.workers.findResources('AWS::Lambda::EventSourceMapping');
+    expect(Object.keys(sources).length).toBe(2);
+    for (const source of Object.values(sources)) {
+      // Without this one poisoned message takes its whole batch to the DLQ.
+      expect(source.Properties?.FunctionResponseTypes).toEqual(['ReportBatchItemFailures']);
+    }
+  });
+
+  it('scopes SES sending to the one address we send as', () => {
+    templates.workers.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: ['ses:SendEmail', 'ses:SendRawEmail'],
+            Condition: { StringEquals: { 'ses:FromAddress': 'no-reply@example.com' } },
+          }),
+        ]),
+      },
+    });
+  });
+
+  it('lets the embedding worker call Bedrock inference profiles', () => {
+    templates.workers.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: 'bedrock:InvokeModel',
+            Resource: Match.arrayWith([Match.stringLikeRegexp('inference-profile')]),
+          }),
+        ]),
+      },
+    });
+  });
+
+  it('gives every function a log group with retention', () => {
+    const groups = templates.workers.findResources('AWS::Logs::LogGroup');
+    expect(Object.keys(groups).length).toBeGreaterThanOrEqual(3);
+    for (const group of Object.values(groups)) {
+      expect(group.Properties?.RetentionInDays).toBe(7);
+    }
+  });
+});
+
+describe('api stack', () => {
+  let templates: ReturnType<typeof synth>;
+  beforeAll(() => {
+    templates = synth();
+  });
+
+  it('puts every merchant route behind IAM authorization', () => {
+    const routes = templates.api.findResources('AWS::ApiGatewayV2::Route');
+    expect(Object.keys(routes).length).toBeGreaterThan(0);
+
+    // There is no merchant session yet (T1.6). An unauthenticated route here would hand
+    // any caller a presigned URL scoped to any merchant's S3 prefix.
+    for (const route of Object.values(routes)) {
+      expect(route.Properties?.AuthorizationType).toBe('AWS_IAM');
+    }
+  });
+
+  it('exposes the API endpoint as an output', () => {
+    templates.api.hasOutput('MerchantApiUrl', {});
+  });
+});
 
 describe('queue stack (T1.4)', () => {
   let templates: ReturnType<typeof synth>;
@@ -118,11 +229,11 @@ describe('data stack (T1.3)', () => {
     templates = synth();
   });
 
-  it('runs Aurora Serverless v2 on PostgreSQL 16 at the configured capacity', () => {
+  it('scales dev to zero, so an idle cluster costs nothing', () => {
     templates.data.hasResourceProperties('AWS::RDS::DBCluster', {
       Engine: 'aurora-postgresql',
       EngineVersion: Match.stringLikeRegexp('^16\\.'),
-      ServerlessV2ScalingConfiguration: { MinCapacity: 0.5, MaxCapacity: 4 },
+      ServerlessV2ScalingConfiguration: { MinCapacity: 0, MaxCapacity: 4 },
       StorageEncrypted: true,
     });
   });
