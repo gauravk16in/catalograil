@@ -12,7 +12,11 @@
  * only output is `packages/embeddings/MODELS.md`.
  */
 import { writeFileSync } from 'node:fs';
-import { BedrockClient, ListFoundationModelsCommand } from '@aws-sdk/client-bedrock';
+import {
+  BedrockClient,
+  ListFoundationModelsCommand,
+  ListInferenceProfilesCommand,
+} from '@aws-sdk/client-bedrock';
 import {
   BedrockRuntimeClient,
   InvokeModelCommand,
@@ -96,10 +100,21 @@ const CANDIDATES: readonly Candidate[] = [
   },
 ];
 
+/**
+ * Why a probe failed, which matters more than the failure itself.
+ *
+ * `not-enabled` means the model identifier is real and the account simply cannot call it
+ * yet — model access not granted, or an account-level verification hold. `invalid-id`
+ * means no such model exists in this region, and no amount of waiting will change it.
+ * Distinguishing the two is the difference between "wait" and "pick another model".
+ */
+type FailureKind = 'not-enabled' | 'invalid-id' | 'bad-request' | 'other';
+
 interface ProbeResult {
   readonly candidate: Candidate;
   readonly modality: Modality;
   readonly ok: boolean;
+  readonly failure?: FailureKind;
   readonly dimensions?: number;
   readonly embeddingTypes?: string[];
   readonly latencyMs?: number[];
@@ -273,7 +288,49 @@ async function probe(
     }
   }
 
-  return { candidate, modality, ok: false, error: lastError };
+  return { candidate, modality, ok: false, failure: classify(lastError), error: lastError };
+}
+
+function classify(error: string): FailureKind {
+  if (error.includes('model identifier is invalid')) return 'invalid-id';
+  if (error.includes('AccessDenied')) return 'not-enabled';
+  if (error.includes('ValidationException')) return 'bad-request';
+  return 'other';
+}
+
+/**
+ * Discovers inference profiles that front an embedding model.
+ *
+ * Some models — Embed v4 among them — refuse on-demand invocation and must be called
+ * through a profile instead. The profile's id is regional and not guessable, so it is
+ * listed rather than assumed: a hand-written `apac.cohere.embed-v4:0` is simply an invalid
+ * identifier, which is what the first run of this script discovered.
+ */
+async function listEmbeddingInferenceProfiles(): Promise<{ id: string; modelIds: string[] }[]> {
+  const client = new BedrockClient({ region: REGION });
+  try {
+    const res = await client.send(new ListInferenceProfilesCommand({}));
+    return (res.inferenceProfileSummaries ?? [])
+      .map((p) => ({
+        id: p.inferenceProfileId ?? '',
+        modelIds: (p.models ?? []).map((m) => m.modelArn ?? '').filter(Boolean),
+      }))
+      .filter((p) => p.id && p.modelIds.some((arn) => /embed/i.test(arn)));
+  } catch (err) {
+    console.warn(`  ! ListInferenceProfiles failed: ${(err as Error).message}`);
+    return [];
+  }
+}
+
+function profileCandidate(id: string, modelIds: string[]): Candidate {
+  const isCohereV4 = modelIds.some((arn) => /cohere\.embed-v4/.test(arn));
+  return {
+    modelId: id,
+    label: `Inference profile ${id}`,
+    family: isCohereV4 ? 'cohere-v4' : 'cohere-v3',
+    modalities: isCohereV4 ? ['text', 'image'] : ['text'],
+    crossRegion: true,
+  };
 }
 
 async function listAvailableEmbeddingModels(): Promise<string[]> {
@@ -306,9 +363,17 @@ function renderModelsDoc(results: ProbeResult[], listed: string[]): string {
   const image = pick('image');
 
   const row = (r: ProbeResult) =>
-    `| \`${r.candidate.modelId}\` | ${r.modality} | ${r.ok ? '✅' : '❌'} | ${r.dimensions ?? '—'} | ${
+    `| \`${r.candidate.modelId}\` | ${r.modality} | ${r.ok ? '✅' : `❌ ${r.failure}`} | ${r.dimensions ?? '—'} | ${
       r.embeddingTypes?.join(', ') ?? '—'
     } | ${r.latencyMs ? `${median(r.latencyMs)} ms` : '—'} | ${r.requestShape ?? r.error ?? ''} |`;
+
+  const realButBlocked = [
+    ...new Set(results.filter((r) => r.failure === 'not-enabled').map((r) => r.candidate.modelId)),
+  ];
+  const blockedSection =
+    realButBlocked.length > 0
+      ? `\n## Valid identifiers, not yet callable\n\nThese model IDs exist in \`${REGION}\` — the call was refused, not the name. Grant model\naccess in the Bedrock console (or clear the account hold) and re-run; no model substitution\nis needed.\n\n${realButBlocked.map((id) => `- \`${id}\``).join('\n')}\n`
+      : '';
 
   return `# Embedding models — verified access
 
@@ -331,6 +396,7 @@ ${
       ? `> ⚠️ Text and image dimensions differ (${text.dimensions} vs ${image.dimensions}). \`v_semantic\`/\`v_intent\` and \`v_visual\` cannot share one width.\n`
       : ''
   }
+${blockedSection}
 ## Full probe results
 
 | Model ID | Modality | Works | Dims | Embedding types | Median latency | Detail |
@@ -349,12 +415,19 @@ async function main(): Promise<void> {
   console.log(`\nProbing Bedrock embedding models in ${REGION}\n`);
 
   const listed = await listAvailableEmbeddingModels();
-  console.log(`  ListFoundationModels: ${listed.length} embedding model(s) visible\n`);
+  console.log(`  ListFoundationModels: ${listed.length} embedding model(s) visible`);
+
+  const profiles = await listEmbeddingInferenceProfiles();
+  console.log(`  ListInferenceProfiles: ${profiles.length} embedding profile(s) visible\n`);
 
   const runtime = new BedrockRuntimeClient({ region: REGION });
   const results: ProbeResult[] = [];
 
-  for (const candidate of CANDIDATES) {
+  // Discovered profiles are probed ahead of the hard-coded list, since a model that needs
+  // one cannot be reached any other way.
+  const allCandidates = [...profiles.map((p) => profileCandidate(p.id, p.modelIds)), ...CANDIDATES];
+
+  for (const candidate of allCandidates) {
     for (const modality of candidate.modalities) {
       process.stdout.write(`  ${candidate.label} [${modality}] ... `);
       const result = await probe(runtime, candidate, modality);
@@ -362,7 +435,7 @@ async function main(): Promise<void> {
       console.log(
         result.ok
           ? `✅ ${result.dimensions} dims, ${median(result.latencyMs ?? [])} ms, shape ${result.requestShape}`
-          : `❌ ${result.error}`,
+          : `❌ [${result.failure}] ${result.error}`,
       );
     }
   }
@@ -373,7 +446,18 @@ async function main(): Promise<void> {
   console.log('\n─────────────────────────────────────────────');
   console.log(`  text  → ${textWinner ? textWinner.candidate.modelId : 'NONE'}`);
   console.log(`  image → ${imageWinner ? imageWinner.candidate.modelId : 'NONE'}`);
-  console.log('─────────────────────────────────────────────\n');
+  console.log('─────────────────────────────────────────────');
+
+  // The useful half of a failed run: which identifiers are real but not yet callable.
+  const realButBlocked = [
+    ...new Set(results.filter((r) => r.failure === 'not-enabled').map((r) => r.candidate.modelId)),
+  ];
+  if (realButBlocked.length > 0) {
+    console.log('\n  Valid model IDs in this region, currently not callable:');
+    for (const id of realButBlocked) console.log(`    ${id}`);
+    console.log('  Grant model access in the Bedrock console, then re-run.');
+  }
+  console.log('');
 
   const docPath = 'packages/embeddings/MODELS.md';
   writeFileSync(docPath, renderModelsDoc(results, listed));
