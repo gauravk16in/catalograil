@@ -98,7 +98,13 @@ export class FrontendStack extends Stack {
       });
 
       new CfnOutput(this, `${appId}AppUrl`, {
-        value: `https://${branch}.${app.attrDefaultDomain}`,
+        /**
+         * The branch name is sanitised, not used raw. Amplify derives the subdomain by
+         * replacing anything that cannot appear in a hostname — a branch like
+         * `phase-1/complete` becomes `phase-1-complete` — so emitting the raw name here
+         * produced a URL with a slash in the host that resolved to nothing.
+         */
+        value: `https://${branch.replace(/[^a-zA-Z0-9-]/g, '-')}.${app.attrDefaultDomain}`,
         description: `${appId} dashboard URL`,
       });
     }
@@ -120,15 +126,32 @@ export class FrontendStack extends Stack {
       repository: `https://github.com/${options.repository}`,
       accessToken: options.githubToken.unsafeUnwrap(),
       iamServiceRole: options.roleArn,
-      platform: 'WEB_COMPUTE', // Next.js SSR rather than a static export.
-      environmentVariables: Object.entries(options.environment).map(([name, value]) => ({
-        name,
-        value,
-      })),
+      /**
+       * `WEB`, not `WEB_COMPUTE`. Both apps are `output: 'export'` static bundles — every
+       * page is a client component calling the API — so there is no Node runtime to host.
+       * WEB_COMPUTE would deploy a server that has nothing to do, and its runtime expects a
+       * real `node_modules` in the app directory, which a pnpm workspace does not produce.
+       */
+      platform: 'WEB',
+      environmentVariables: Object.entries({
+        ...options.environment,
+        // Amplify uses this to locate the app inside the monorepo; the buildSpec's appRoot
+        // alone is not enough for its framework detection.
+        AMPLIFY_MONOREPO_APP_ROOT: options.appDirectory,
+        AMPLIFY_DIFF_DEPLOY: 'false',
+      }).map(([name, value]) => ({ name, value })),
       customRules: [
-        // Amplify's default SPA rewrite would swallow Next's own routing; this only
-        // rewrites what genuinely 404s at the CDN.
-        { source: '/<*>', target: '/index.html', status: '404-200' },
+        /**
+         * Client-side routing on static hosting. Next exports a file per route, so a direct
+         * hit on /products resolves normally; this only catches paths the CDN genuinely
+         * cannot find, returning the shell with a 200 so the router can take over rather
+         * than the browser showing a 404.
+         */
+        {
+          source: '/<*>',
+          target: '/index.html',
+          status: '404-200',
+        },
       ],
       buildSpec: this.buildSpec(options.appDirectory),
     });
@@ -140,37 +163,58 @@ export class FrontendStack extends Stack {
   /**
    * The pnpm monorepo build.
    *
-   * `pnpm install` runs at the repository root because a workspace cannot be installed in
-   * isolation, and `--filter` builds the workspace packages this app depends on before the
-   * app itself — without that the app compiles against stale or missing `dist` output from
-   * @catalograil/core, which is the failure mode that looks like a missing module.
+   * Two things here are not obvious and both were found by a failed deploy.
+   *
+   * First, the spec uses Amplify's `applications`/`appRoot` form rather than the plain
+   * `frontend` form with a path-prefixed baseDirectory. That is what tells Amplify this is
+   * a monorepo app, and it is the trigger for running its Next.js adapter inside that root.
+   * Without it the build succeeds and the *deploy* fails with "Failed to find the
+   * deploy-manifest.json file" — the adapter that produces that manifest never ran.
+   *
+   * Second, install happens from the repository root: a pnpm workspace cannot be installed
+   * in isolation. `--filter ...^...` then builds only this app's workspace dependencies,
+   * so @catalograil/core and friends have real dist output before Next compiles against
+   * them — otherwise the failure looks like a missing module rather than a build order
+   * problem.
    */
   private buildSpec(appDirectory: string): string {
     const appName = appDirectory.split('/').pop();
+    const depth = appDirectory.split('/').length;
+    const toRoot = Array(depth).fill('..').join('/');
+
     return JSON.stringify(
       {
         version: 1,
-        frontend: {
-          phases: {
-            preBuild: {
-              commands: [
-                'corepack enable',
-                'corepack prepare pnpm@11.23.0 --activate',
-                'pnpm install --frozen-lockfile',
-              ],
+        applications: [
+          {
+            appRoot: appDirectory,
+            frontend: {
+              phases: {
+                preBuild: {
+                  commands: [
+                    `cd ${toRoot}`,
+                    'corepack enable',
+                    'corepack prepare pnpm@11.23.0 --activate',
+                    'pnpm install --frozen-lockfile',
+                    // Dependencies only; Amplify builds the app itself in the build phase.
+                    `pnpm --filter @catalograil/${appName}-app^... build`,
+                    `cd ${appDirectory}`,
+                  ],
+                },
+                build: { commands: ['npx next build'] },
+              },
+              artifacts: {
+                // `out`, not `.next`: this is a static export. Relative to appRoot, which
+                // is what the `applications` form expects.
+                baseDirectory: 'out',
+                files: ['**/*'],
+              },
+              cache: {
+                paths: [`${toRoot}/node_modules/**/*`, '.next/cache/**/*'],
+              },
             },
-            build: {
-              commands: [`pnpm --filter @catalograil/${appName}-app... build`],
-            },
           },
-          artifacts: {
-            baseDirectory: `${appDirectory}/.next`,
-            files: ['**/*'],
-          },
-          cache: {
-            paths: ['node_modules/**/*', `${appDirectory}/.next/cache/**/*`],
-          },
-        },
+        ],
       },
       null,
       2,
