@@ -513,15 +513,30 @@ constant, regenerate, and the database constraint follows. Never hand-write the 
 
 ## 13. Progress
 
-| Task                          | State                                                             |
-| ----------------------------- | ----------------------------------------------------------------- |
-| T1.1 monorepo scaffold        | ✅ done                                                           |
-| T1.2 verify Bedrock access    | ⏳ script written, **never run** — needs AWS credentials          |
-| T1.3 CDK data stack           | ⬜ not started                                                    |
-| T1.4 CDK queue stack          | ⬜ not started                                                    |
-| T1.5 schema, migrations, seed | ✅ done — migration applies clean, all three HNSW indexes present |
-| T1.6 onward                   | ⬜ not started                                                    |
+| Task                            | State                                                             |
+| ------------------------------- | ----------------------------------------------------------------- |
+| T1.1–T1.25 (all of Phase 1)     | ✅ done — every acceptance criterion measured, not assumed        |
+| T1.2 verify Bedrock access      | ✅ done — Embed v4 reachable, 1024 dims, both text and image      |
+| Deployed to `dev` (ap-south-1)  | ✅ Network, Queue, Data, Worker, Api, Frontend                    |
 
-`packages/embeddings/MODELS.md` is still a placeholder. Until `pnpm verify:bedrock` runs,
-the model IDs in `.env.example` and the `vector(1024)` width in `searchable_units` are
-assumptions, not facts.
+Account **149561018240** (`catalog-rail`) is the deployment account. A second account,
+124074140058, holds a Bedrock API key that has no valid payment instrument — it is not used
+by anything and `AWS_BEARER_TOKEN_BEDROCK` is commented out in `.env.local` because both the
+CLI and the JS SDK prefer it over the profile, silently sending model calls to the wrong
+account. Local runs must use `AWS_PROFILE=catalograil`.
+
+`pnpm verify:bedrock` has been run and `packages/embeddings/MODELS.md` reflects the real
+account: `global.cohere.embed-v4:0` for text and image at 1024 dims, which is what deployed
+environments are configured with and what makes `vector(1024)` a fact rather than an
+assumption. The defaults compiled into `BedrockEmbedder` deliberately stay on Embed v3 plus
+Titan Multimodal, because that is what existing local databases were embedded with and the
+two are the same width — switching model without re-embedding would mix vector spaces in
+one column and quietly rot recall rather than fail.
+
+Deploys must carry `GITHUB_TOKEN_SECRET_NAME`; `infra/bin/app.ts` drops the whole Frontend
+stack without it, and because the deployed Frontend still imports the API endpoint,
+deploying the Api stack alone then fails on an export that is still in use.
+
+To get a deployed environment's catalogue into search, invoke the migration Lambda with
+`{"seed": true}` and then `{"skipBootstrap": true, "backfill": true}` — nothing else
+enqueues an existing catalogue for indexing.

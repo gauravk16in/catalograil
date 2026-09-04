@@ -1,13 +1,19 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 import { AppError } from '@catalograil/core';
 import type { EnrichmentModel, EnrichmentResult, ProductForEnrichment } from './enrich.js';
 
 /**
- * The Claude-backed enrichment model (T1.13).
+ * The Claude-backed enrichment model (T1.13), running on Bedrock.
  *
- * Haiku, because this is a structured-extraction job over short text run across an entire
- * catalogue — the cost difference at that volume is the difference between enrichment
- * being free and being a line item, and the task is not one a larger model does better.
+ * Bedrock rather than the Anthropic API, so the whole system needs one credential: the
+ * same AWS role that reaches the embedding models reaches Claude, and there is no separate
+ * Anthropic account, key rotation or egress path to manage. It also keeps enrichment inside
+ * the VPC's existing network policy.
+ *
+ * Haiku, because this is structured extraction over short text run across an entire
+ * catalogue. Measured on this account: Haiku 4.5 answers in ~870ms against Sonnet 4.6's
+ * ~2.9s, at a fraction of the token price — and the task is not one a larger model does
+ * better. Override with ANTHROPIC_ENRICHMENT_MODEL if a catalogue proves otherwise.
  *
  * The prompt asks for strict JSON and the parser refuses anything else. T1.13 allows one
  * retry on malformed JSON and then a DLQ; that retry is here, close to the failure, rather
@@ -15,8 +21,21 @@ import type { EnrichmentModel, EnrichmentResult, ProductForEnrichment } from './
  * redelivery costs a cold start and reprocesses the whole batch.
  */
 
-const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
-const MAX_TOKENS = 8192;
+/**
+ * The inference profile, not the bare model id. Claude on Bedrock refuses on-demand
+ * invocation by model id — `anthropic.claude-haiku-4-5-...` is a ValidationException
+ * telling you to use a profile, which is the same trap Embed v4 sets.
+ */
+const DEFAULT_MODEL = 'global.anthropic.claude-haiku-4-5-20251001-v1:0';
+/**
+ * Sized for a full batch, not a single product.
+ *
+ * 8192 was enough for one product and not for twenty: a batch's metadata measured ~300
+ * tokens each, so a full ENRICHMENT_BATCH_SIZE run hit the ceiling, truncated mid-array,
+ * and surfaced as "Model response was not valid JSON" — an error that sends you looking at
+ * the parser rather than the limit. Observed on the first deployed backfill.
+ */
+const MAX_TOKENS = 32_000;
 
 const SYSTEM_PROMPT = `You categorise products for an Indian e-commerce catalogue that is searched by AI assistants.
 
@@ -39,17 +58,18 @@ external_ref, category_slug, category_path, attributes, use_cases, target_audien
 
 export interface ClaudeEnrichmentOptions {
   readonly model?: string;
-  readonly apiKey?: string;
+  readonly region?: string;
+  readonly client?: BedrockRuntimeClient;
 }
 
 export class ClaudeEnrichmentModel implements EnrichmentModel {
-  private readonly client: Anthropic;
+  private readonly client: BedrockRuntimeClient;
   private readonly model: string;
 
   constructor(options: ClaudeEnrichmentOptions = {}) {
-    this.client = new Anthropic({
-      ...(options.apiKey ? { apiKey: options.apiKey } : {}),
-    });
+    this.client =
+      options.client ??
+      new BedrockRuntimeClient(options.region ? { region: options.region } : {});
     this.model = options.model ?? process.env.ANTHROPIC_ENRICHMENT_MODEL ?? DEFAULT_MODEL;
   }
 
@@ -76,27 +96,53 @@ export class ClaudeEnrichmentModel implements EnrichmentModel {
   private async callWithOneRetry(userContent: string): Promise<string> {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const response = await this.client.messages.create({
-          model: this.model,
-          max_tokens: MAX_TOKENS,
-          system: SYSTEM_PROMPT,
-          messages: [
-            { role: 'user', content: userContent },
-            // Prefilling the opening bracket removes the most common failure mode: a
-            // perfectly good JSON array wrapped in a sentence of explanation.
-            { role: 'assistant', content: '[' },
-          ],
-        });
+        const response = await this.client.send(
+          new InvokeModelCommand({
+            modelId: this.model,
+            contentType: 'application/json',
+            accept: 'application/json',
+            body: JSON.stringify({
+              // Bedrock's Claude requires this version field; omitting it is rejected.
+              anthropic_version: 'bedrock-2023-05-31',
+              max_tokens: MAX_TOKENS,
+              system: SYSTEM_PROMPT,
+              messages: [
+                { role: 'user', content: userContent },
+                // Prefilling the opening bracket removes the most common failure mode: a
+                // perfectly good JSON array wrapped in a sentence of explanation.
+                { role: 'assistant', content: '[' },
+              ],
+            }),
+          }),
+        );
 
-        const text = response.content
-          .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-          .map((block) => block.text)
+        const parsed = JSON.parse(new TextDecoder().decode(response.body)) as {
+          content?: { type: string; text?: string }[];
+          stop_reason?: string;
+        };
+
+        /**
+         * Truncation is not a parse failure, and saying so saves the next person the hour
+         * this cost: a response cut at the token ceiling is valid output that stops
+         * mid-array, so the JSON error it produces points at entirely the wrong thing.
+         */
+        if (parsed.stop_reason === 'max_tokens') {
+          throw new AppError(
+            'ENRICHMENT_FAILED',
+            `Model output hit the ${MAX_TOKENS}-token ceiling and was truncated. ` +
+              'Lower ENRICHMENT_BATCH_SIZE or raise MAX_TOKENS.',
+            { retryable: false },
+          );
+        }
+        const text = (parsed.content ?? [])
+          .filter((block) => block.type === 'text')
+          .map((block) => block.text ?? '')
           .join('');
 
         return `[${text}`;
       } catch (err) {
         if (attempt === 1) {
-          throw new AppError('ENRICHMENT_FAILED', `Claude call failed: ${(err as Error).message}`, {
+          throw new AppError('ENRICHMENT_FAILED', `Bedrock Claude call failed: ${(err as Error).message}`, {
             retryable: true,
             cause: err,
           });

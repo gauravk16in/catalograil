@@ -1,4 +1,3 @@
-import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { Logger } from '@aws-lambda-powertools/logger';
 import {
   AppError,
@@ -15,39 +14,21 @@ import { runEnrichment, type EnrichmentDeps } from './enrich.js';
 const logger = new Logger({ serviceName: 'enrichment-worker' });
 
 let cached: EnrichmentDeps | undefined;
-const secrets = new SecretsManagerClient({});
 
 /**
- * Resolves the Anthropic key once per execution environment.
+ * No API key to resolve.
  *
- * The key lives in Secrets Manager rather than a Lambda environment variable, because an
- * environment variable is visible to anyone who can describe the function. Resolved at
- * cold start and held in the closure, so a warm invocation costs nothing — fetching per
- * message would add a Secrets Manager round trip to every batch.
+ * Enrichment runs Claude on Bedrock, so it authenticates with the Lambda's own IAM role —
+ * the same credential that reaches the embedding models. There is no Anthropic key to
+ * store, rotate, or accidentally log, and one fewer secret is one fewer thing to get wrong.
  */
-async function resolveApiKey(): Promise<string | undefined> {
-  const secretId = process.env.ANTHROPIC_API_KEY_SECRET;
-  if (!secretId) return process.env.ANTHROPIC_API_KEY;
-
-  const result = await secrets.send(new GetSecretValueCommand({ SecretId: secretId }));
-  if (!result.SecretString) return undefined;
-
-  // Tolerates both a bare string and a JSON secret with an `apiKey` field, since the AWS
-  // console creates the latter by default and a mismatch here is a confusing failure.
-  try {
-    const parsed = JSON.parse(result.SecretString) as Record<string, string>;
-    return parsed.apiKey ?? parsed.ANTHROPIC_API_KEY ?? result.SecretString;
-  } catch {
-    return result.SecretString;
-  }
-}
-
-async function deps(): Promise<EnrichmentDeps> {
+function deps(): EnrichmentDeps {
   if (!cached) {
-    const apiKey = await resolveApiKey();
     cached = {
       db: getDb(),
-      model: new ClaudeEnrichmentModel(apiKey ? { apiKey } : {}),
+      model: new ClaudeEnrichmentModel({
+        ...(process.env.BEDROCK_REGION ? { region: process.env.BEDROCK_REGION } : {}),
+      }),
       embeddingQueue: new SqsQueue<EmbeddingMessage>(required('SQS_QUEUE_EMBEDDING')),
       clock: systemClock,
     };
@@ -83,7 +64,7 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   try {
     const outcome = await runEnrichment(
       messages.map((m) => m.message),
-      await deps(),
+      deps(),
     );
 
     logger.info('Enrichment finished', {

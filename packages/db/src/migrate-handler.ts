@@ -1,4 +1,5 @@
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
+import { SendMessageBatchCommand, SQSClient } from '@aws-sdk/client-sqs';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
@@ -30,6 +31,20 @@ interface MigrationEvent {
    * Never set true in prod; nothing here checks that, so that is on the caller.
    */
   readonly seed?: boolean;
+  /**
+   * Enqueues every unindexed product for enrichment, which is what actually gets a
+   * deployed catalogue into search.
+   *
+   * Without this there is no route from a seeded deployed database to `searchable_units`:
+   * only the embedding worker writes that table (rule 4 in §8), and the only things that
+   * normally reach the enrichment queue are a CSV import and a manual product create.
+   * A seeded dev environment therefore returned "no products match" for every query while
+   * holding a full catalogue, which looks like a broken search rather than an unindexed one.
+   *
+   * Safe to re-run: enrichment and embedding are both keyed on `content_hash`, so a second
+   * pass over unchanged products re-embeds nothing (rule 9).
+   */
+  readonly backfill?: boolean;
 }
 
 export interface MigrationResult {
@@ -37,9 +52,11 @@ export interface MigrationResult {
   readonly extensions: string[];
   readonly migrationsApplied: boolean;
   readonly seeded: boolean;
+  readonly backfilled: number;
 }
 
 const secrets = new SecretsManagerClient({});
+const sqs = new SQSClient({});
 
 /** Required before the schema is created; Aurora enables none of them by default. */
 const EXTENSIONS = ['vector', 'ltree', 'pg_trgm', 'uuid-ossp'] as const;
@@ -88,15 +105,57 @@ export async function handler(event: MigrationEvent = {}): Promise<MigrationResu
       await seed(db);
     }
 
+    const backfilled = event.backfill ? await enqueueForEnrichment(sql) : 0;
+
     return {
       bootstrapped: !event.skipBootstrap,
       extensions: applied,
       migrationsApplied: true,
       seeded: Boolean(event.seed),
+      backfilled,
     };
   } finally {
     await sql.end({ timeout: 5 });
   }
+}
+
+/**
+ * Queues every product that has no indexed searchable unit yet.
+ *
+ * Driven by a `NOT EXISTS` against `searchable_units` rather than by product status,
+ * because status says where a product is in the merchant's workflow and this needs to know
+ * whether search can see it — a product left `draft` by a failed embedding is exactly the
+ * one to retry, and an `active` product that is already indexed is exactly the one to skip.
+ */
+async function enqueueForEnrichment(sql: postgres.Sql): Promise<number> {
+  const queueUrl = process.env.ENRICHMENT_QUEUE_URL;
+  if (!queueUrl) throw new Error('ENRICHMENT_QUEUE_URL is not set.');
+
+  const rows = (await sql`
+    SELECT p.id::text AS id, p.merchant_id::text AS merchant_id
+    FROM products p
+    WHERE p.status <> 'archived'
+      AND NOT EXISTS (
+        SELECT 1 FROM searchable_units su
+        WHERE su.product_id = p.id AND su.embedding_status = 'indexed'
+      )`) as unknown as { id: string; merchant_id: string }[];
+
+  // SQS caps a batch at 10; the whole point of batching here is that a catalogue backfill
+  // is thousands of messages and one request each would dominate the runtime.
+  for (let i = 0; i < rows.length; i += 10) {
+    const chunk = rows.slice(i, i + 10);
+    await sqs.send(
+      new SendMessageBatchCommand({
+        QueueUrl: queueUrl,
+        Entries: chunk.map((row, index) => ({
+          Id: String(index),
+          MessageBody: JSON.stringify({ productId: row.id, merchantId: row.merchant_id }),
+        })),
+      }),
+    );
+  }
+
+  return rows.length;
 }
 
 interface Credentials {

@@ -92,7 +92,7 @@ interface HydratedRow {
   attributes: Record<string, unknown> | null;
   option_values: Record<string, string> | null;
   use_cases: string[] | null;
-  updated_at: Date;
+  updated_at: Date | string;
   merchant_id: string;
   merchant_name: string;
   merchant_city: string | null;
@@ -121,7 +121,17 @@ function mapRow(row: HydratedRow): HydratedUnit {
     attributes: row.attributes ?? {},
     optionValues: row.option_values,
     useCases: row.use_cases,
-    updatedAt: row.updated_at,
+    /**
+     * Coerced, not trusted.
+     *
+     * This is hand-written SQL run through the raw driver, so the JavaScript type of a
+     * timestamptz is the driver's business rather than the schema's — deployed, this came
+     * back as something `Date` methods do not exist on, and the first thing to touch it
+     * was `freshnessScore`, several layers away, failing with "getTime is not a function"
+     * for every search. A boundary that hands the domain a `Date` in its type should hand
+     * it a real one.
+     */
+    updatedAt: row.updated_at instanceof Date ? row.updated_at : new Date(row.updated_at),
     merchantId: row.merchant_id,
     merchantName: row.merchant_name,
     merchantCity: row.merchant_city,

@@ -272,6 +272,9 @@ importers:
       '@aws-sdk/client-secrets-manager':
         specifier: ^3.716.0
         version: 3.1125.0
+      '@aws-sdk/client-sqs':
+        specifier: ^3.1125.0
+        version: 3.1125.0
       '@aws-sdk/rds-signer':
         specifier: ^3.716.0
         version: 3.1125.0
@@ -730,9 +733,6 @@ importers:
 
   services/workers/enrichment:
     dependencies:
-      '@anthropic-ai/sdk':
-        specifier: ^0.71.0
-        version: 0.71.2(zod@3.25.76)
       '@aws-lambda-powertools/logger':
         specifier: ^2.12.0
         version: 2.35.0
@@ -742,10 +742,10 @@ importers:
       '@aws-lambda-powertools/tracer':
         specifier: ^2.12.0
         version: 2.35.0
-      '@aws-sdk/client-dynamodb':
+      '@aws-sdk/client-bedrock-runtime':
         specifier: ^3.716.0
         version: 3.1125.0
-      '@aws-sdk/client-secrets-manager':
+      '@aws-sdk/client-dynamodb':
         specifier: ^3.716.0
         version: 3.1125.0
       '@aws-sdk/client-sqs':

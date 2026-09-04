@@ -73,7 +73,20 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       const appError = AppError.from(err);
       // Powertools drops a "message" field silently (it collides with the log
       // record's own message), which had been hiding every error detail here.
-      logger.error('Embedding failed', { code: appError.code, errorMessage: appError.message });
+      /**
+       * The underlying error, not just the AppError's public message.
+       *
+       * `AppError.from` deliberately replaces an unrecognised error with "An unexpected
+       * error occurred" — right for an API response, useless in a log. A deployed backfill
+       * failed 61 messages and every line said exactly that, with the real cause discarded.
+       * The buyer never sees this, so log what actually happened.
+       */
+      logger.error('Embedding failed', {
+        code: appError.code,
+        errorMessage: appError.message,
+        cause: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+        stack: err instanceof Error ? err.stack?.split('\n').slice(0, 4).join(' | ') : undefined,
+      });
       if (appError.retryable) batchItemFailures.push({ itemIdentifier: record.messageId });
     } finally {
       logger.removeKeys(['correlationId']);

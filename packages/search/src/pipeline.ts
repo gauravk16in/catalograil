@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   AppError,
+  DEFAULT_MIN_SEMANTIC_SIMILARITY,
   rupeesToPaise,
   type Clock,
   type QueryEmbeddingCache,
@@ -116,9 +117,12 @@ export async function runSearch(
     queryText: request.query ?? null,
     filters: queryFilters,
     limit: RERANK_POOL,
-    ...(request.minSemanticSimilarity != null
-      ? { minSemanticSimilarity: request.minSemanticSimilarity }
-      : {}),
+    /**
+     * Applied by default now that it has a measured value. Off would mean every nonsense
+     * query returns its nearest neighbours as though they were matches; a caller that
+     * genuinely wants everything can still pass 0.
+     */
+    minSemanticSimilarity: request.minSemanticSimilarity ?? DEFAULT_MIN_SEMANTIC_SIMILARITY,
   });
   queryMs = performance.now() - queryStart;
 

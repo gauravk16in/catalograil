@@ -27,21 +27,22 @@
     "db:bundle-schema": "tsx scripts/bundle-schema.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.716.0",
+    "@aws-sdk/client-sqs": "^3.1125.0",
+    "@aws-sdk/rds-signer": "^3.716.0",
     "@catalograil/core": "workspace:*",
     "drizzle-orm": "^0.38.2",
-    "postgres": "^3.4.5",
-    "@aws-sdk/rds-signer": "^3.716.0",
-    "@aws-sdk/client-secrets-manager": "^3.716.0"
+    "postgres": "^3.4.5"
   },
   "devDependencies": {
     "@catalograil/config": "workspace:*",
     "@types/node": "^22.10.2",
-    "eslint": "^9.17.0",
-    "typescript": "^5.7.2",
-    "vitest": "^2.1.8",
-    "drizzle-kit": "^0.30.1",
     "dotenv": "^16.4.7",
+    "drizzle-kit": "^0.30.1",
+    "esbuild": "^0.24.2",
+    "eslint": "^9.17.0",
     "tsx": "^4.19.2",
-    "esbuild": "^0.24.2"
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
   }
 }

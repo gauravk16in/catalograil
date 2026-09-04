@@ -6,7 +6,6 @@ import type * as lambda from 'aws-cdk-lib/aws-lambda';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import type * as rds from 'aws-cdk-lib/aws-rds';
 import type * as s3 from 'aws-cdk-lib/aws-s3';
-import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import type * as sqs from 'aws-cdk-lib/aws-sqs';
 import type { Construct } from 'constructs';
 import type { EnvConfig } from '../lib/env.js';
@@ -27,8 +26,6 @@ export interface WorkerStackProps extends StackProps {
   readonly uploadsBucket: s3.IBucket;
   readonly exportsBucket: s3.IBucket;
   readonly sesFromAddress: string;
-  /** Name of a Secrets Manager secret holding the Anthropic API key, when configured. */
-  readonly anthropicApiKeySecretName?: string;
 }
 
 /**
@@ -121,9 +118,10 @@ export class WorkerStack extends Stack {
       environment: {
         ...dbEnv,
         SQS_QUEUE_EMBEDDING: props.queues.embedding.queueUrl,
-        ...(props.anthropicApiKeySecretName
-          ? { ANTHROPIC_API_KEY_SECRET: props.anthropicApiKeySecretName }
-          : {}),
+        BEDROCK_REGION: this.region,
+        // Verified callable on this account by T1.2. Claude on Bedrock refuses on-demand
+        // invocation by bare model id, so this is the inference profile.
+        ANTHROPIC_ENRICHMENT_MODEL: 'global.anthropic.claude-haiku-4-5-20251001-v1:0',
       },
     });
 
@@ -142,13 +140,9 @@ export class WorkerStack extends Stack {
 
     grantDatabase(proxy, enrichment);
     props.queues.embedding.grantSendMessages(enrichment);
-    if (props.anthropicApiKeySecretName) {
-      secretsmanager.Secret.fromSecretNameV2(
-        this,
-        'AnthropicApiKey',
-        props.anthropicApiKeySecretName,
-      ).grantRead(enrichment);
-    }
+    // Claude runs on Bedrock, so enrichment needs the same grant the embedding worker has
+    // rather than a secret holding an Anthropic key.
+    grantBedrock(enrichment);
 
     // ── Migration (operational, not a queue consumer) ───────────────────────────
     /**
@@ -170,6 +164,9 @@ export class WorkerStack extends Stack {
         DB_SECRET_ARN: props.cluster.secret!.secretArn,
         DB_CLUSTER_ENDPOINT: props.cluster.clusterEndpoint.hostname,
         DATABASE_NAME: 'catalograil',
+        // Lets `backfill: true` push a seeded catalogue into the pipeline; without it a
+        // deployed database can be full and still invisible to search.
+        ENRICHMENT_QUEUE_URL: props.queues.enrichment.queueUrl,
       },
       bundling: {
         /**
@@ -188,6 +185,7 @@ export class WorkerStack extends Stack {
     });
 
     props.cluster.secret!.grantRead(this.migrationFunction);
+    props.queues.enrichment.grantSendMessages(this.migrationFunction);
   }
 }
 

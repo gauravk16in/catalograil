@@ -6,7 +6,7 @@ import {
   type Queue,
 } from '@catalograil/core';
 import { categories, products, type Database } from '@catalograil/db';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, ne } from 'drizzle-orm';
 
 /**
  * T1.13 — the enrichment worker.
@@ -294,7 +294,20 @@ async function loadProducts(db: Database, ids: string[]): Promise<LoadedProduct[
       status: products.status,
     })
     .from(products)
-    .where(and(inArray(products.id, ids), eq(products.status, 'draft')));
+    /**
+     * Anything but archived, not just `draft`.
+     *
+     * A `draft` filter looks right — enrichment is what takes a new product live — but it
+     * silently drops the other half of the traffic. T1.12's `updateProduct` queues
+     * enrichment for a product that is already `active`, which is precisely the case where
+     * a merchant has changed the text and the metadata needs recomputing; those messages
+     * were being consumed and discarded without a log line. A seeded catalogue, written
+     * `active`, was invisible for the same reason.
+     *
+     * Re-enriching a live product is safe by construction: `enrichment_source` marks every
+     * human-edited field and the merge below refuses to overwrite one.
+     */
+    .where(and(inArray(products.id, ids), ne(products.status, 'archived')));
 
   return rows.map((row) => ({
     id: row.id,
