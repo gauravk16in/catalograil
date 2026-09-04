@@ -6,6 +6,8 @@ import { usePathname } from 'next/navigation';
 /** T1.21's nav. "Preview in AI" is listed last because it is where a merchant ends up. */
 const LINKS = [
   { href: '/products', label: 'Products' },
+  { href: '/inventory', label: 'Inventory' },
+  { href: '/orders', label: 'Orders' },
   { href: '/uploads', label: 'Uploads' },
   { href: '/policies', label: 'Policies' },
   { href: '/preview', label: 'Preview in AI' },

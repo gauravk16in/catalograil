@@ -15,6 +15,14 @@ import {
   type PaymentConfigDeps,
 } from './handlers/payment-config.js';
 import { KmsTokenCipher } from '@catalograil/razorpay';
+import {
+  catalogueSummary,
+  getPipelineStatus,
+  retryAllFailed,
+  retryProducts,
+} from './handlers/pipeline.js';
+import { listInventory, updateStock } from './handlers/inventory.js';
+import { getOrder, listOrders, orderSummary, transitionOrder } from './handlers/orders.js';
 import { getSession } from './handlers/session.js';
 import {
   archiveProduct,
@@ -145,6 +153,89 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       }
       if (method === 'DELETE') {
         return json(200, await archiveProduct(productDeps(), merchantId, productId));
+      }
+    }
+
+    // ── Pipeline status and retry (Block E) ─────────────────────────────────────
+
+    if (method === 'GET' && path === '/merchant/summary') {
+      const merchantId = requireMerchantId(event);
+      const [catalogue, orderCounts] = await Promise.all([
+        catalogueSummary(deps().db, merchantId),
+        orderSummary(deps().db, merchantId),
+      ]);
+      return json(200, { catalogue, orders: orderCounts });
+    }
+
+    const statusMatch = /^\/merchant\/products\/([0-9a-fA-F-]{36})\/status$/.exec(path);
+    if (method === 'GET' && statusMatch) {
+      return json(
+        200,
+        await getPipelineStatus(deps().db, requireMerchantId(event), statusMatch[1]!),
+      );
+    }
+
+    if (method === 'POST' && path === '/merchant/products/retry') {
+      const merchantId = requireMerchantId(event);
+      const body = parseBody(event) as { productIds?: string[]; all?: boolean };
+      const result = body.all
+        ? await retryAllFailed(productDeps(), merchantId)
+        : await retryProducts(productDeps(), merchantId, body.productIds ?? []);
+      return json(200, result);
+    }
+
+    // ── Inventory (Block F) ─────────────────────────────────────────────────────
+
+    if (method === 'GET' && path === '/merchant/inventory') {
+      const q = event.queryStringParameters ?? {};
+      return json(
+        200,
+        await listInventory(deps().db, requireMerchantId(event), {
+          ...(q.lowStockBelow ? { lowStockBelow: Number(q.lowStockBelow) } : {}),
+          ...(q.outOfStockOnly === 'true' ? { outOfStockOnly: true } : {}),
+        }),
+      );
+    }
+
+    if (method === 'POST' && path === '/merchant/inventory') {
+      return json(
+        200,
+        await updateStock(
+          { db: deps().db, clock: systemClock },
+          requireMerchantId(event),
+          parseBody(event),
+        ),
+      );
+    }
+
+    // ── Orders (Block F) ────────────────────────────────────────────────────────
+
+    if (method === 'GET' && path === '/merchant/orders') {
+      const q = event.queryStringParameters ?? {};
+      return json(
+        200,
+        await listOrders(deps().db, requireMerchantId(event), {
+          ...(q.status ? { status: q.status } : {}),
+        }),
+      );
+    }
+
+    const orderMatch = /^\/merchant\/orders\/([0-9a-fA-F-]{36})$/.exec(path);
+    if (orderMatch) {
+      const merchantId = requireMerchantId(event);
+      if (method === 'GET') {
+        return json(200, await getOrder(deps().db, merchantId, orderMatch[1]!));
+      }
+      if (method === 'PATCH') {
+        return json(
+          200,
+          await transitionOrder(
+            { db: deps().db, clock: systemClock },
+            merchantId,
+            orderMatch[1]!,
+            parseBody(event),
+          ),
+        );
       }
     }
 
