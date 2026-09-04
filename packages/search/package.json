@@ -24,7 +24,8 @@
     "@catalograil/core": "workspace:*",
     "@catalograil/db": "workspace:*",
     "@catalograil/embeddings": "workspace:*",
-    "drizzle-orm": "^0.38.2"
+    "drizzle-orm": "^0.38.2",
+    "postgres": "^3.4.5"
   },
   "devDependencies": {
     "@catalograil/config": "workspace:*",

@@ -371,6 +371,9 @@ importers:
       drizzle-orm:
         specifier: ^0.38.2
         version: 0.38.4(@types/react@19.2.18)(pg@8.23.0)(postgres@3.4.9)(react@19.2.8)
+      postgres:
+        specifier: ^3.4.5
+        version: 3.4.9
     devDependencies:
       '@catalograil/config':
         specifier: workspace:*
