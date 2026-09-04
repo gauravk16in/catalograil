@@ -122,9 +122,14 @@ export default function ProductsPage() {
             still invisible while it is being indexed.
           </p>
         </div>
-        <Button variant="secondary">
-          <Link href="/uploads">Add products</Link>
-        </Button>
+        <div className="flex gap-2">
+          <Button>
+            <Link href="/products/new">Add a product</Link>
+          </Button>
+          <Button variant="secondary">
+            <Link href="/uploads">Upload a CSV</Link>
+          </Button>
+        </div>
       </div>
 
       {error && <ErrorNote>{error}</ErrorNote>}
