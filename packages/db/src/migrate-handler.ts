@@ -2,6 +2,7 @@ import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-sec
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
+import { seed } from './seed.js';
 
 /**
  * Bootstraps and migrates the database, from inside the VPC.
@@ -23,12 +24,19 @@ import postgres from 'postgres';
 interface MigrationEvent {
   /** Set to skip the DDL bootstrap and only apply migrations. */
   readonly skipBootstrap?: boolean;
+  /**
+   * Runs the same seed data `pnpm db:seed` writes locally (T1.5), through this Lambda's
+   * direct-to-cluster connection rather than a route that does not exist from a laptop.
+   * Never set true in prod; nothing here checks that, so that is on the caller.
+   */
+  readonly seed?: boolean;
 }
 
 export interface MigrationResult {
   readonly bootstrapped: boolean;
   readonly extensions: string[];
   readonly migrationsApplied: boolean;
+  readonly seeded: boolean;
 }
 
 const secrets = new SecretsManagerClient({});
@@ -73,12 +81,18 @@ export async function handler(event: MigrationEvent = {}): Promise<MigrationResu
       });
     }
 
-    await migrate(drizzle(sql), { migrationsFolder: './migrations' });
+    const db = drizzle(sql);
+    await migrate(db, { migrationsFolder: './migrations' });
+
+    if (event.seed) {
+      await seed(db);
+    }
 
     return {
       bootstrapped: !event.skipBootstrap,
       extensions: applied,
       migrationsApplied: true,
+      seeded: Boolean(event.seed),
     };
   } finally {
     await sql.end({ timeout: 5 });

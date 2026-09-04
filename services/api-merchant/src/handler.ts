@@ -64,7 +64,13 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     return json(404, { code: 'NOT_FOUND', message: `No route for ${route}.` });
   } catch (err) {
     const appError = AppError.from(err);
-    logger.error('Request failed', { code: appError.code, message: appError.message });
+    logger.error('Request failed', {
+      code: appError.code,
+      errorMessage: appError.message,
+      cause:
+        appError.cause instanceof Error ? appError.cause.message : String(appError.cause ?? ''),
+      stack: appError.cause instanceof Error ? appError.cause.stack : undefined,
+    });
     return json(appError.httpStatus, appError.toJSON());
   } finally {
     logger.removeKeys(['correlationId']);

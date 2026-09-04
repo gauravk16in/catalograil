@@ -57,7 +57,9 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       });
     } catch (err) {
       const appError = AppError.from(err);
-      logger.error('Ingestion failed', { code: appError.code, message: appError.message });
+      // Powertools drops a "message" field silently (it collides with the log
+      // record's own message), which had been hiding every error detail here.
+      logger.error('Ingestion failed', { code: appError.code, errorMessage: appError.message });
       // A non-retryable error would only fail again; let it go to the DLQ immediately.
       if (appError.retryable) batchItemFailures.push({ itemIdentifier: record.messageId });
     } finally {
@@ -68,22 +70,53 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   return { batchItemFailures };
 }
 
+/**
+ * The message on the `ingestion` queue is S3's native `ObjectCreated` event notification,
+ * not a shape this service controls — `bucket.addEventNotification` in the data stack
+ * wires S3 straight to SQS, and S3's notification schema (`Records[].s3.object.key`) is
+ * what actually arrives. `IngestionMessage` as defined in `@catalograil/core` describes
+ * what the worker needs, not what is on the wire; this function is the translation between
+ * the two, and it is the whole reason a custom message shape doesn't just work here.
+ *
+ * `jobId` and `merchantId` are not in the S3 event at all. They come out of the object key
+ * instead, via the same `uploads/{merchantId}/{jobId}.csv` convention the upload endpoint
+ * uses to name the object (see `uploadKey` in services/api-merchant) — the two must agree,
+ * and this is the other half of that agreement.
+ */
 function parseMessage(record: SQSRecord): IngestionMessage {
-  let body: unknown;
+  let event: unknown;
   try {
-    body = JSON.parse(record.body);
+    event = JSON.parse(record.body);
   } catch {
     throw new AppError('INGESTION_FAILED', 'Message body is not JSON.', { retryable: false });
   }
 
-  const { jobId, merchantId, s3Key } = (body ?? {}) as Partial<IngestionMessage>;
-  if (!jobId || !merchantId || !s3Key) {
-    throw new AppError('INGESTION_FAILED', 'Message is missing jobId, merchantId or s3Key.', {
+  const s3Record = (event as { Records?: { s3?: { object?: { key?: string } } }[] })?.Records?.[0]
+    ?.s3;
+  const encodedKey = s3Record?.object?.key;
+  if (!encodedKey) {
+    throw new AppError('INGESTION_FAILED', 'Not an S3 ObjectCreated notification.', {
       retryable: false,
-      details: { body },
+      details: { event },
     });
   }
-  return { jobId, merchantId, s3Key };
+
+  // S3 event keys are URL-encoded, and a `+` in one represents a literal space.
+  const key = decodeURIComponent(encodedKey.replace(/\+/g, ' '));
+  const match = /^uploads\/([^/]+)\/([^/]+)\.csv$/.exec(key);
+  if (!match) {
+    throw new AppError(
+      'INGESTION_FAILED',
+      `Object key does not match the upload convention: "${key}".`,
+      {
+        retryable: false,
+        details: { key },
+      },
+    );
+  }
+
+  const [, merchantId, jobId] = match;
+  return { jobId: jobId!, merchantId: merchantId!, s3Key: key };
 }
 
 function required(name: string): string {

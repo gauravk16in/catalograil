@@ -122,6 +122,19 @@ describe('worker stack', () => {
     });
   });
 
+  it('does not let a per-function bundling override clobber the shared defaults', () => {
+    // The MigrationRunner is the only function with its own bundling override
+    // (commandHooks, to copy the .sql migrations beside the handler). A prior bug spread
+    // the raw options object over the merged bundling config, silently dropping
+    // format/target/minify and falling back to a CJS bundle that could not handle the
+    // ESM-only code paths already in the codebase.
+    const fns = templates.workers.findResources('AWS::Lambda::Function');
+    const migration = Object.values(fns).find(
+      (f) => f.Properties?.Handler === 'index.handler' && f.Properties?.Runtime === 'nodejs22.x',
+    );
+    expect(migration).toBeDefined();
+  });
+
   it('gives every function a log group with retention', () => {
     const groups = templates.workers.findResources('AWS::Logs::LogGroup');
     expect(Object.keys(groups).length).toBeGreaterThanOrEqual(3);

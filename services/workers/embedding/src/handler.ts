@@ -71,7 +71,9 @@ export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
       });
     } catch (err) {
       const appError = AppError.from(err);
-      logger.error('Embedding failed', { code: appError.code, message: appError.message });
+      // Powertools drops a "message" field silently (it collides with the log
+      // record's own message), which had been hiding every error detail here.
+      logger.error('Embedding failed', { code: appError.code, errorMessage: appError.message });
       if (appError.retryable) batchItemFailures.push({ itemIdentifier: record.messageId });
     } finally {
       logger.removeKeys(['correlationId']);

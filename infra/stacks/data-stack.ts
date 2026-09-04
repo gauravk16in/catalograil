@@ -94,8 +94,17 @@ export class DataStack extends Stack {
 
     // ── Aurora Serverless v2 ────────────────────────────────────────────────────
     this.cluster = new rds.DatabaseCluster(this, 'Catalog', {
+      /**
+       * 16.13, not the 16.4 D1 was written against.
+       *
+       * 16.4 is no longer offered in ap-south-1 — CREATE_FAILED on the first deploy
+       * attempt named it directly. Available versions vary by region and by when AWS
+       * retires an old minor, so 16.13 is the newest this CDK release recognises rather
+       * than a version pinned in the plan; ap-south-1 also offers 16.14 at time of
+       * writing, one minor ahead of what CDK's enum knows about.
+       */
       engine: rds.DatabaseClusterEngine.auroraPostgres({
-        version: rds.AuroraPostgresEngineVersion.VER_16_4,
+        version: rds.AuroraPostgresEngineVersion.VER_16_13,
       }),
       vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
@@ -121,7 +130,7 @@ export class DataStack extends Stack {
        */
       parameterGroup: new rds.ParameterGroup(this, 'ClusterParameters', {
         engine: rds.DatabaseClusterEngine.auroraPostgres({
-          version: rds.AuroraPostgresEngineVersion.VER_16_4,
+          version: rds.AuroraPostgresEngineVersion.VER_16_13,
         }),
         description: 'CatalogRail cluster parameters',
         parameters: {

@@ -40,6 +40,7 @@ export function createFunction(
     vpc,
     securityGroups,
     environment,
+    bundling: bundlingOverride,
     ...rest
   } = options;
 
@@ -91,7 +92,7 @@ export function createFunction(
         "import{createRequire as __cr}from'module';const require=__cr(import.meta.url);" +
         "import{fileURLToPath as __fp}from'url';import{dirname as __dn}from'path';" +
         'const __filename=__fp(import.meta.url);const __dirname=__dn(__filename);',
-      ...rest.bundling,
+      ...bundlingOverride,
     },
     environment: {
       NODE_OPTIONS: '--enable-source-maps',

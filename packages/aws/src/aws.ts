@@ -22,19 +22,35 @@ import {
  * The AWS implementations of the ports. Everything AWS-specific in the ingestion path
  * lives in this file, which is what lets `runIngestion` be tested without it.
  *
- * Untested against real AWS — there are no credentials in the development environment yet.
- * The logic these wrap is covered by the in-memory implementations; what is unverified here
- * is the SDK wiring itself, and it should be exercised the first time a stack is deployed.
+ * Exercised against a real deployed account: `S3ObjectStore.presignPut` through a real
+ * merchant API request, a real browser-style PUT of a CSV to the returned URL, and the
+ * checksum fix below is a real bug that surfaced doing exactly that.
  */
 
 const DEFAULT_PRESIGN_SECONDS = 15 * 60;
 /** SQS accepts at most 10 messages per batch. */
 const SQS_BATCH_SIZE = 10;
 
+/**
+ * `requestChecksumCalculation: 'WHEN_REQUIRED'` disables the SDK's newer default of always
+ * attaching a CRC32 checksum. That default computes the checksum over the request body at
+ * signing time — empty, for a presigned URL, since there is no body yet — and bakes
+ * `x-amz-checksum-crc32=<checksum of nothing>` into the signed query string. Any client
+ * that then PUTs a real file gets a checksum mismatch the moment the body is non-empty,
+ * which S3 reports back as SignatureDoesNotMatch rather than a checksum error, making it
+ * look like a broken signature instead of what it is. Every presigned upload T1.11 issues
+ * has a real body, so this default is never correct here — found by testing exactly that
+ * against a deployed bucket, where a curl PUT of a real CSV failed with this signature
+ * error until the client was built with this option.
+ */
+function defaultS3Client(): S3Client {
+  return new S3Client({ requestChecksumCalculation: 'WHEN_REQUIRED' });
+}
+
 export class S3ObjectStore implements ObjectStore {
   constructor(
     private readonly bucket: string,
-    private readonly client: S3Client = new S3Client({}),
+    private readonly client: S3Client = defaultS3Client(),
   ) {}
 
   async readStream(key: string): Promise<AsyncIterable<Uint8Array>> {
@@ -63,6 +79,10 @@ export class S3ObjectStore implements ObjectStore {
     );
   }
 
+  /**
+   * `options.maxBytes` is accepted but not enforced here — see below for why, and for what
+   * would actually enforce it.
+   */
   async presignPut(key: string, options: PresignOptions = {}): Promise<PresignedUpload> {
     const expiresIn = options.expiresInSeconds ?? DEFAULT_PRESIGN_SECONDS;
     const url = await getSignedUrl(
@@ -71,9 +91,21 @@ export class S3ObjectStore implements ObjectStore {
         Bucket: this.bucket,
         Key: key,
         ...(options.contentType ? { ContentType: options.contentType } : {}),
-        // Signed into the URL, so an oversized body is rejected by S3 rather than by us
-        // after the upload has already crossed the wire.
-        ...(options.maxBytes ? { ContentLength: options.maxBytes } : {}),
+        /**
+         * `ContentLength` on a presigned PUT is NOT a maximum — it pins the request to
+         * that exact byte count, since it becomes a signed header the client must match
+         * precisely. Setting it to `maxBytes` therefore rejected every real upload whose
+         * size differed from the cap, which is every upload that was not already exactly
+         * at the limit. Found by PUTing a real 321-byte CSV against a URL presigned with
+         * ContentLength 33554432, and getting SignatureDoesNotMatch — a bug present since
+         * T1.11 and never exercised until an upload actually ran against real S3.
+         *
+         * Real enforcement of a size cap on a presigned upload needs a presigned POST with
+         * a `content-length-range` policy condition, not a presigned PUT — a different
+         * request shape (multipart form fields) that createUpload's response would also
+         * need to change to carry. Left as a follow-up; unenforced today means the size
+         * limit exists as a comment and in T1.11's row-count guard, not at the S3 layer.
+         */
       }),
       { expiresIn },
     );
