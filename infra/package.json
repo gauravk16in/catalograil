@@ -9,7 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests",
     "lint": "eslint bin lib stacks --no-error-on-unmatched-pattern",
-    "synth": "cdk synth",
+    "synth": "cdk synth --context env=dev",
     "deploy": "cdk deploy",
     "diff": "cdk diff",
     "clean": "rm -rf dist cdk.out .turbo *.tsbuildinfo"
