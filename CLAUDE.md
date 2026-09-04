@@ -431,3 +431,97 @@ quotations
 | `dev`     | 0.5–1 ACU | Razorpay test mode, Bedrock on-demand                |
 | `staging` | 0.5–2 ACU | Razorpay test mode, full e2e suite runs here         |
 | `prod`    | 1–8 ACU   | Razorpay live, provisioned concurrency on MCP Lambda |
+
+---
+
+## 11. Phase documents
+
+The task breakdowns live alongside this file's source in
+[Razorpay Merchant Product Discovery/](Razorpay%20Merchant%20Product%20Discovery/):
+
+| File                                                               | Contents                                                          |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------- |
+| [PHASE_1.md](Razorpay%20Merchant%20Product%20Discovery/PHASE_1.md) | Foundation, catalog intelligence, merchant dashboard (T1.1–T1.25) |
+| [PHASE_2.md](Razorpay%20Merchant%20Product%20Discovery/PHASE_2.md) | MCP server, image search, payments, split-screen surface          |
+| [PHASE_3.md](Razorpay%20Merchant%20Product%20Discovery/PHASE_3.md) | Live inventory, bookings, quotations, fulfillment                 |
+| [PHASE_4.md](Razorpay%20Merchant%20Product%20Discovery/PHASE_4.md) | Ranking quality, intelligence, connectors, expansion              |
+
+Every task carries an **Acceptance** line. That is the definition of done — do not mark a
+task complete without meeting it. A phase's exit checklist is the next phase's prerequisite.
+
+---
+
+## 12. Commands
+
+```bash
+pnpm install                 # all 24 workspace projects
+pnpm build                   # turbo run build across the graph
+pnpm typecheck               # tsc --noEmit everywhere
+pnpm test                    # vitest run everywhere
+pnpm lint
+pnpm format
+
+# one package at a time
+pnpm --filter @catalograil/core test
+pnpm --filter @catalograil/core exec vitest run src/money/paise.test.ts    # a single file
+pnpm --filter @catalograil/core exec vitest run -t 'Indian digit grouping' # a single test
+
+# database
+pnpm db:generate             # drizzle-kit generate (bundles the schema first — see below)
+pnpm db:migrate              # apply migrations; needs DATABASE_URL
+pnpm db:seed                 # 3 merchants, 60 products, 233 variants; idempotent
+pnpm db:studio
+
+# infra (needs AWS credentials)
+pnpm --filter @catalograil/infra exec cdk synth --context env=dev
+pnpm --filter @catalograil/infra exec cdk deploy DataStack --context env=dev
+
+pnpm verify:bedrock          # T1.2; rewrites packages/embeddings/MODELS.md
+```
+
+### Local database
+
+A local Postgres with pgvector stands in for Aurora during development:
+
+```bash
+brew install postgresql@18 pgvector
+createdb catalograil
+export DATABASE_URL="postgres://$(whoami)@localhost:5432/catalograil"
+pnpm db:migrate && pnpm db:seed
+```
+
+`db:migrate` creates the `vector`, `ltree`, `pg_trgm` and `uuid-ossp` extensions itself; in
+deployed environments the data stack creates them on first boot instead (T1.3). The local
+server is PG18 while Aurora targets PG16 — nothing in the schema depends on the difference,
+but a future migration that does should be caught before it ships.
+
+### Two wrinkles worth knowing
+
+**drizzle-kit and ESM.** drizzle-kit loads the schema through a CJS `require`, which cannot
+resolve the `.js` specifiers correct Node ESM source needs. So `db:generate` first bundles
+`src/schema/index.ts` into `.drizzle/schema.cjs` via
+[packages/db/scripts/bundle-schema.ts](packages/db/scripts/bundle-schema.ts), keeping
+`drizzle-orm` external so drizzle-kit and the bundle share one copy of the library. Edit the
+schema files, never the bundle.
+
+**CHECK constraints come from TypeScript.** Status and archetype constraints are generated
+from the constant arrays in `@catalograil/core` via the `inList` helper in
+[packages/db/src/schema/_shared.ts](packages/db/src/schema/_shared.ts). Add a status to the
+constant, regenerate, and the database constraint follows. Never hand-write the SQL list.
+
+---
+
+## 13. Progress
+
+| Task                          | State                                                             |
+| ----------------------------- | ----------------------------------------------------------------- |
+| T1.1 monorepo scaffold        | ✅ done                                                           |
+| T1.2 verify Bedrock access    | ⏳ script written, **never run** — needs AWS credentials          |
+| T1.3 CDK data stack           | ⬜ not started                                                    |
+| T1.4 CDK queue stack          | ⬜ not started                                                    |
+| T1.5 schema, migrations, seed | ✅ done — migration applies clean, all three HNSW indexes present |
+| T1.6 onward                   | ⬜ not started                                                    |
+
+`packages/embeddings/MODELS.md` is still a placeholder. Until `pnpm verify:bedrock` runs,
+the model IDs in `.env.example` and the `vector(1024)` width in `searchable_units` are
+assumptions, not facts.

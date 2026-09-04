@@ -1,0 +1,125 @@
+import { MERCHANT_CAPABILITIES, MERCHANT_STATUSES } from '@catalograil/core';
+import { sql } from 'drizzle-orm';
+import {
+  boolean,
+  check,
+  index,
+  integer,
+  jsonb,
+  numeric,
+  pgTable,
+  primaryKey,
+  text,
+  uuid,
+} from 'drizzle-orm/pg-core';
+import { createdAt, inList, tstz, updatedAt } from './_shared.js';
+
+export const merchants = pgTable(
+  'merchants',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    businessName: text('business_name').notNull(),
+    legalName: text('legal_name'),
+    contactEmail: text('contact_email').notNull(),
+    contactPhone: text('contact_phone'),
+    gstin: text('gstin'),
+    gstinVerified: boolean('gstin_verified').default(false).notNull(),
+    razorpayAccountId: text('razorpay_account_id').unique(),
+    status: text('status').default('pending').notNull(),
+    categories: text('categories').array(),
+    city: text('city'),
+    state: text('state'),
+    onboardedAt: tstz('onboarded_at'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index('merchants_status_created_idx').on(t.status, t.createdAt),
+    check('merchants_status_check', sql`${t.status} IN (${inList(MERCHANT_STATUSES)})`),
+  ],
+);
+
+export const merchantCapabilities = pgTable(
+  'merchant_capabilities',
+  {
+    merchantId: uuid('merchant_id')
+      .notNull()
+      .references(() => merchants.id, { onDelete: 'cascade' }),
+    capability: text('capability').notNull(),
+    /** Endpoint URLs, auth references and schema hints for live/bookable/quote adapters. */
+    config: jsonb('config').$type<Record<string, unknown>>(),
+    enabled: boolean('enabled').default(true).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.merchantId, t.capability] }),
+    check(
+      'merchant_capabilities_capability_check',
+      sql`${t.capability} IN (${inList(MERCHANT_CAPABILITIES)})`,
+    ),
+  ],
+);
+
+/**
+ * Rule 3: never store a Razorpay token unencrypted. Both token columns hold a KMS
+ * envelope-encrypted payload and are decrypted in memory only — see
+ * `@catalograil/razorpay`. Nothing outside that package should read them.
+ */
+export const merchantTokens = pgTable(
+  'merchant_tokens',
+  {
+    merchantId: uuid('merchant_id')
+      .primaryKey()
+      .references(() => merchants.id, { onDelete: 'cascade' }),
+    accessToken: text('access_token').notNull(),
+    refreshToken: text('refresh_token').notNull(),
+    accessExpiresAt: tstz('access_expires_at').notNull(),
+    refreshExpiresAt: tstz('refresh_expires_at').notNull(),
+    scopes: text('scopes').array(),
+    lastRefreshedAt: tstz('last_refreshed_at'),
+    /** Consecutive refresh failures. At 3 the merchant is suspended (T1.7). */
+    refreshFailures: integer('refresh_failures').default(0).notNull(),
+  },
+  // The refresh worker scans this daily for tokens nearing expiry.
+  (t) => [index('merchant_tokens_access_expires_idx').on(t.accessExpiresAt)],
+);
+
+export const merchantPolicies = pgTable('merchant_policies', {
+  merchantId: uuid('merchant_id')
+    .primaryKey()
+    .references(() => merchants.id, { onDelete: 'cascade' }),
+  /** Mandatory — a merchant cannot reach `active` without all three (T1.9). */
+  refundUrl: text('refund_url').notNull(),
+  termsUrl: text('terms_url').notNull(),
+  fulfillmentUrl: text('fulfillment_url').notNull(),
+  refundSummary: text('refund_summary'),
+  termsSummary: text('terms_summary'),
+  fulfillmentSummary: text('fulfillment_summary'),
+  returnWindowDays: integer('return_window_days'),
+  /** buyer | merchant | conditional */
+  returnShippingBy: text('return_shipping_by'),
+  dispatchSlaHours: integer('dispatch_sla_hours'),
+  lastCheckedAt: tstz('last_checked_at'),
+  /** ok | unreachable | empty | changed */
+  lastCheckStatus: text('last_check_status'),
+  consecutiveFailures: integer('consecutive_failures').default(0).notNull(),
+});
+
+/** Recomputed nightly by the metrics worker. Never written from a request path. */
+export const merchantMetrics = pgTable('merchant_metrics', {
+  merchantId: uuid('merchant_id')
+    .primaryKey()
+    .references(() => merchants.id, { onDelete: 'cascade' }),
+  ordersTotal: integer('orders_total').default(0).notNull(),
+  ordersFulfilled: integer('orders_fulfilled').default(0).notNull(),
+  ordersCancelled: integer('orders_cancelled').default(0).notNull(),
+  onTimeDeliveries: integer('on_time_deliveries').default(0).notNull(),
+  avgRating: numeric('avg_rating', { precision: 3, scale: 2 }),
+  ratingCount: integer('rating_count').default(0).notNull(),
+  avgAckMinutes: integer('avg_ack_minutes'),
+  disputeCount: integer('dispute_count').default(0).notNull(),
+  verificationScore: numeric('verification_score', { precision: 4, scale: 3 }),
+  trustScore: numeric('trust_score', { precision: 4, scale: 3 }),
+  /** Caps this merchant's trust contribution in re-rank (never-do #3). */
+  isNewMerchant: boolean('is_new_merchant').default(true).notNull(),
+  computedAt: tstz('computed_at'),
+});
