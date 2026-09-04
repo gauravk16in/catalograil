@@ -60,6 +60,7 @@ function synth(env: 'dev' | 'prod' = 'dev') {
     uploadsBucket: data.uploadsBucket,
     queryCacheTable: data.tables.QueryCache!,
     searchLogsTable: data.tables.SearchLogs!,
+    enrichmentQueue: queues.queues.enrichment,
   });
 
   return {
@@ -154,15 +155,47 @@ describe('api stack', () => {
     templates = synth();
   });
 
-  it('puts every merchant route behind IAM authorization', () => {
+  it('puts every route except health behind IAM authorization', () => {
     const routes = templates.api.findResources('AWS::ApiGatewayV2::Route');
     expect(Object.keys(routes).length).toBeGreaterThan(0);
 
-    // There is no merchant session yet (T1.6). An unauthenticated route here would hand
-    // any caller a presigned URL scoped to any merchant's S3 prefix.
-    for (const route of Object.values(routes)) {
-      expect(route.Properties?.AuthorizationType).toBe('AWS_IAM');
+    // There is no merchant session yet. An unauthenticated route carrying merchant data
+    // would hand any caller a presigned URL scoped to any merchant's S3 prefix.
+    //
+    // `/health` is the one deliberate exception (S1.5): it returns no catalogue data, no
+    // merchant data and no identifiers, and it exists to be reachable precisely when auth
+    // is the thing that is broken. Asserted by name rather than by a loosened rule, so a
+    // future unauthenticated route still fails this test.
+    for (const [id, route] of Object.entries(routes)) {
+      const key = String(route.Properties?.RouteKey ?? '');
+      if (key.includes('/health')) {
+        expect(route.Properties?.AuthorizationType ?? 'NONE').toBe('NONE');
+        continue;
+      }
+      expect(route.Properties?.AuthorizationType, `${id} (${key})`).toBe('AWS_IAM');
     }
+  });
+
+  it('never routes OPTIONS through the authorizer', () => {
+    /**
+     * The bug that broke every dashboard request: `ANY` matches `OPTIONS`, so the IAM
+     * authorizer ran on the CORS preflight and returned 403, and the browser then never
+     * sent the real request at all.
+     */
+    const routes = templates.api.findResources('AWS::ApiGatewayV2::Route');
+    for (const route of Object.values(routes)) {
+      const key = String(route.Properties?.RouteKey ?? '');
+      expect(key.startsWith('ANY '), `ANY route would capture OPTIONS: ${key}`).toBe(false);
+      expect(key.startsWith('OPTIONS ')).toBe(false);
+    }
+  });
+
+  it('declares explicit CORS origins, never a wildcard', () => {
+    templates.api.hasResourceProperties('AWS::ApiGatewayV2::Api', {
+      CorsConfiguration: {
+        AllowOrigins: ['http://localhost:3000', 'http://localhost:3001'],
+      },
+    });
   });
 
   it('exposes the API endpoint as an output', () => {

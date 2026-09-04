@@ -137,6 +137,9 @@ describe.skipIf(!DATABASE_URL)('hybrid search', () => {
         await tx.unsafe(`SET LOCAL hnsw.ef_search = 100`);
         await tx.unsafe(`SET LOCAL hnsw.iterative_scan = relaxed_order`);
         await tx.unsafe(`SET LOCAL enable_seqscan = off`);
+        // Mirrors the production query: without this the planner picks a parallel
+        // sequential scan over the index once statistics are accurate.
+        await tx.unsafe(`SET LOCAL max_parallel_workers_per_gather = 0`);
         const vector = toVectorLiteral(params.queryVector!);
         const price = params.filters?.maxPricePaise;
         const rows = await tx.unsafe(
