@@ -1,23 +1,29 @@
 import { createHash } from 'node:crypto';
-import { EMBEDDING_DIMENSIONS } from '@catalograil/core';
+import { AppError, EMBEDDING_DIMENSIONS } from '@catalograil/core';
 
 /**
  * The embedding port and the Bedrock implementation behind it.
  *
- * Everything here is shaped by what T1.2 measured against the real account rather than by
- * what D5 assumed, and the shape has changed twice as access changed:
+ * Everything here is shaped by what was measured against the real account rather than by
+ * what D5 assumed, and the shape changed as Bedrock access changed:
  *
- *   - D5 asked for Cohere Embed v4. It exists in ap-south-1 but is gated behind an AWS
- *     Marketplace subscription that has not completed, so it is currently uncallable.
- *   - What does work is Cohere Embed v3 for text and Titan Multimodal v1 for images, both
- *     at 1024 dimensions — so `searchable_units` needs no change either way.
+ *   - D5 asked for Cohere Embed v4. It was gated behind an incomplete AWS Marketplace
+ *     subscription and uncallable, so the defaults below moved to Cohere Embed v3 for text
+ *     and Titan Multimodal v1 for images.
+ *   - Embed v4 is now callable, and deployed environments set it explicitly for both text
+ *     and images. The defaults here stay on v3/Titan: they are what a local database was
+ *     embedded with, and silently switching model would leave two vector spaces mixed in
+ *     one column — the same width, so nothing would error, and recall would simply rot.
  *
- * The consequence worth understanding: text and images are now embedded by *different
- * models into different vector spaces*. That is fine for how search works today, because
- * `v_semantic`/`v_intent` and `v_visual` are separate columns compared only against a query
- * embedded the same way. It does mean a *text* query cannot search the visual channel,
- * which a single multimodal model would have allowed — that matters for Phase 2's image
- * search, and is the reason to finish the Embed v4 subscription before then.
+ * Switching an environment to Embed v4 therefore means re-embedding it, not just changing
+ * the id. Embed v4 also defaults to **1536** dimensions where `searchable_units` declares
+ * `vector(1024)`, so `output_dimension` is not optional — see `embedTexts`.
+ *
+ * While text and images are embedded by different models they occupy different vector
+ * spaces. That is fine for how search works today, because `v_semantic`/`v_intent` and
+ * `v_visual` are separate columns compared only against a query embedded the same way. It
+ * does mean a *text* query cannot search the visual channel, which one multimodal model
+ * allows — that is what Embed v4 on both sides buys for Phase 2's image search.
  *
  * See `MODELS.md`, which the verification script regenerates.
  */
@@ -46,7 +52,11 @@ export interface ImagePayload {
  * Which request body a model expects. Bedrock has no way to ask, and getting it wrong is a
  * ValidationException rather than anything descriptive, so it is stated explicitly.
  */
-export type TextModelFamily = 'cohere' | 'titan';
+/**
+ * `cohere-v4` is separate from `cohere` because only Embed v4 accepts `output_dimension`.
+ * v3 returns its native width and rejects the parameter, so the two cannot share a body.
+ */
+export type TextModelFamily = 'cohere' | 'cohere-v4' | 'titan';
 export type ImageModelFamily = 'cohere-v4' | 'titan-multimodal';
 
 export interface BedrockEmbedderOptions {
@@ -101,12 +111,22 @@ export class BedrockEmbedder implements Embedder {
     for (let i = 0; i < texts.length; i += MAX_TEXTS_PER_CALL) {
       const batch = texts.slice(i, i + MAX_TEXTS_PER_CALL);
       const vectors =
-        this.textFamily === 'cohere'
+        this.textFamily !== 'titan'
           ? parseEmbeddings(
               await this.invoker.invoke(this.textModelId, {
                 texts: batch,
                 input_type: inputType,
                 embedding_types: [this.embeddingType],
+                /**
+                 * Embed v4 defaults to 1536, and `searchable_units` declares `vector(1024)`
+                 * per D5. Omitting this produced vectors Postgres rejected on insert with
+                 * "expected 1024 dimensions, not 1536" — a whole deployed backfill failed
+                 * on it, retried to the redrive limit, and reported nothing more specific.
+                 * The image path always sent it; the text path never did.
+                 */
+                ...(this.textFamily === 'cohere-v4'
+                  ? { output_dimension: this.dimensions }
+                  : {}),
               }),
               this.embeddingType,
             )
@@ -126,6 +146,25 @@ export class BedrockEmbedder implements Embedder {
                 return parseEmbeddings(response, this.embeddingType)[0] ?? [];
               }),
             );
+
+      /**
+       * Width is checked here, at the boundary that knows what was asked for.
+       *
+       * A model returning a different width than configured is a configuration error, and
+       * the cheapest place to say so is the call that made it. Left unchecked it surfaces
+       * as a Postgres insert failure inside a queue consumer, several systems away from
+       * the model id that actually caused it.
+       */
+      for (const vector of vectors) {
+        if (vector.length !== this.dimensions) {
+          throw new AppError(
+            'EMBEDDING_FAILED',
+            `${this.textModelId} returned ${vector.length}-dimension vectors, but ` +
+              `${this.dimensions} was configured.`,
+            { retryable: false },
+          );
+        }
+      }
 
       if (vectors.length !== batch.length) {
         throw new Error(
@@ -205,7 +244,9 @@ function parseEmbeddings(response: unknown, embeddingType: 'int8' | 'float'): nu
 }
 
 function inferTextFamily(modelId: string): TextModelFamily {
-  return modelId.includes('titan') ? 'titan' : 'cohere';
+  if (modelId.includes('titan')) return 'titan';
+  // `embed-v4` matches both the bare id and the `global.` inference profile.
+  return modelId.includes('embed-v4') ? 'cohere-v4' : 'cohere';
 }
 
 function inferImageFamily(modelId: string): ImageModelFamily {

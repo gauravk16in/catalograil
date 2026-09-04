@@ -164,6 +164,9 @@ export class WorkerStack extends Stack {
         DB_SECRET_ARN: props.cluster.secret!.secretArn,
         DB_CLUSTER_ENDPOINT: props.cluster.clusterEndpoint.hostname,
         DATABASE_NAME: 'catalograil',
+        // Lets `backfill: true` push a seeded catalogue into the pipeline; without it a
+        // deployed database can be full and still invisible to search.
+        ENRICHMENT_QUEUE_URL: props.queues.enrichment.queueUrl,
       },
       bundling: {
         /**
@@ -182,6 +185,7 @@ export class WorkerStack extends Stack {
     });
 
     props.cluster.secret!.grantRead(this.migrationFunction);
+    props.queues.enrichment.grantSendMessages(this.migrationFunction);
   }
 }
 

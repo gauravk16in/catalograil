@@ -27,7 +27,15 @@ import type { EnrichmentModel, EnrichmentResult, ProductForEnrichment } from './
  * telling you to use a profile, which is the same trap Embed v4 sets.
  */
 const DEFAULT_MODEL = 'global.anthropic.claude-haiku-4-5-20251001-v1:0';
-const MAX_TOKENS = 8192;
+/**
+ * Sized for a full batch, not a single product.
+ *
+ * 8192 was enough for one product and not for twenty: a batch's metadata measured ~300
+ * tokens each, so a full ENRICHMENT_BATCH_SIZE run hit the ceiling, truncated mid-array,
+ * and surfaced as "Model response was not valid JSON" — an error that sends you looking at
+ * the parser rather than the limit. Observed on the first deployed backfill.
+ */
+const MAX_TOKENS = 32_000;
 
 const SYSTEM_PROMPT = `You categorise products for an Indian e-commerce catalogue that is searched by AI assistants.
 
@@ -110,7 +118,22 @@ export class ClaudeEnrichmentModel implements EnrichmentModel {
 
         const parsed = JSON.parse(new TextDecoder().decode(response.body)) as {
           content?: { type: string; text?: string }[];
+          stop_reason?: string;
         };
+
+        /**
+         * Truncation is not a parse failure, and saying so saves the next person the hour
+         * this cost: a response cut at the token ceiling is valid output that stops
+         * mid-array, so the JSON error it produces points at entirely the wrong thing.
+         */
+        if (parsed.stop_reason === 'max_tokens') {
+          throw new AppError(
+            'ENRICHMENT_FAILED',
+            `Model output hit the ${MAX_TOKENS}-token ceiling and was truncated. ` +
+              'Lower ENRICHMENT_BATCH_SIZE or raise MAX_TOKENS.',
+            { retryable: false },
+          );
+        }
         const text = (parsed.content ?? [])
           .filter((block) => block.type === 'text')
           .map((block) => block.text ?? '')

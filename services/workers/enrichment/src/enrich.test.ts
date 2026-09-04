@@ -287,8 +287,24 @@ describe.skipIf(!DATABASE_URL)('enrichment worker', () => {
     expect(queue.messages[0]).toMatchObject({ productId: id, reason: 'enriched' });
   });
 
-  it('ignores a product that is no longer a draft', async () => {
+  it('enriches a live product, because an edit is exactly when metadata must be recomputed', async () => {
+    /**
+     * Regression. This filtered on `status = 'draft'`, which reads as "enrichment is for
+     * new products" and silently discarded the other half of the traffic: T1.12's
+     * updateProduct queues enrichment for a product that is already `active`. The messages
+     * were consumed and dropped with no log line, so a merchant's correction never reached
+     * search and nothing anywhere said so. A seeded catalogue was invisible for the same
+     * reason. Safety here comes from `enrichment_source`, not from status.
+     */
     const id = await createProduct('etest-active', { status: 'active' });
+    const model = new ScriptedModel(() => ({}));
+    const outcome = await runEnrichment([{ productId: id, merchantId }], deps(model));
+    expect(outcome.enriched).toBe(1);
+    expect(model.calls).toBe(1);
+  });
+
+  it('ignores an archived product', async () => {
+    const id = await createProduct('etest-archived', { status: 'archived' });
     const model = new ScriptedModel(() => ({}));
     const outcome = await runEnrichment([{ productId: id, merchantId }], deps(model));
     expect(outcome.enriched).toBe(0);
