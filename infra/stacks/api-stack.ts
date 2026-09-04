@@ -302,16 +302,50 @@ export class ApiStack extends Stack {
     });
 
     /**
-     * Buyer-facing search, behind the buyer pool.
+     * Public search.
      *
-     * The same Lambda as `/internal/search`: the query path is identical and duplicating
-     * it would let the two drift, which for search means the dashboard and the assistant
-     * quietly ranking differently.
+     * Browsing needs no account, deliberately (S2.6): a buyer who must sign up before they
+     * can look at anything will not sign up. It is also consistent with what this product
+     * is — the same catalogue is answered into Claude and ChatGPT, where there is no login
+     * at all, so treating the dashboard as more private than the MCP surface would be
+     * pretending.
+     *
+     * Personal things — a profile, an address, an order history — are behind the pool below.
      */
     this.api.addRoutes({
+      path: '/search',
+      methods: [apigw.HttpMethod.POST],
+      integration: new HttpLambdaIntegration('PublicSearchIntegration', internalApi),
+    });
+
+    /**
+     * The buyer's own account, behind the buyer pool.
+     *
+     * A separate Lambda from search: search is latency-critical with a 200ms budget and
+     * needs Bedrock, while this is a small CRUD surface. Sharing one function would make
+     * search carry this one's cold starts.
+     */
+    const buyerApi = createFunction(this, 'BuyerApi', {
+      config,
+      entry: path.join(REPO_ROOT, 'services/api-buyer/src/handler.ts'),
+      vpc,
+      securityGroups: [lambdaSecurityGroup],
+      timeout: Duration.seconds(29),
+      memorySize: 1024,
+      environment: databaseEnvironment(proxy.endpoint),
+    });
+
+    proxy.grantConnect(buyerApi, 'catalograil');
+
+    this.api.addRoutes({
       path: '/buyer/{proxy+}',
-      methods: [apigw.HttpMethod.GET, apigw.HttpMethod.POST],
-      integration: new HttpLambdaIntegration('BuyerIntegration', internalApi),
+      methods: [
+        apigw.HttpMethod.GET,
+        apigw.HttpMethod.POST,
+        apigw.HttpMethod.PATCH,
+        apigw.HttpMethod.DELETE,
+      ],
+      integration: new HttpLambdaIntegration('BuyerIntegration', buyerApi),
       authorizer: buyerAuthorizer,
     });
 

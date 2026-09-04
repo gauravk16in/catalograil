@@ -156,7 +156,7 @@ describe('api stack', () => {
     templates = synth();
   });
 
-  it('puts every route except health behind IAM authorization', () => {
+  it('puts every route except health and public search behind an authorizer', () => {
     const routes = templates.api.findResources('AWS::ApiGatewayV2::Route');
     expect(Object.keys(routes).length).toBeGreaterThan(0);
 
@@ -167,13 +167,41 @@ describe('api stack', () => {
     // merchant data and no identifiers, and it exists to be reachable precisely when auth
     // is the thing that is broken. Asserted by name rather than by a loosened rule, so a
     // future unauthenticated route still fails this test.
+    /**
+     * Two deliberate exceptions, asserted by name so a third cannot appear by accident.
+     *
+     * `/health` returns no catalogue data, no merchant data and no identifiers, and exists
+     * to be reachable precisely when auth is what is broken.
+     *
+     * `POST /search` is public browsing (S2.6). A buyer who must create an account before
+     * they can look at anything will not create one, and the same catalogue is answered
+     * into Claude and ChatGPT where there is no login at all — so gating it here would be
+     * pretending the data is more private than it is. Everything personal (`/buyer/*`)
+     * stays behind the buyer pool.
+     */
+    const PUBLIC = ['/health', 'POST /search'];
+
     for (const [id, route] of Object.entries(routes)) {
       const key = String(route.Properties?.RouteKey ?? '');
-      if (key.includes('/health')) {
-        expect(route.Properties?.AuthorizationType ?? 'NONE').toBe('NONE');
+      if (PUBLIC.some((p) => key.includes(p))) {
+        expect(route.Properties?.AuthorizationType ?? 'NONE', `${id} (${key})`).toBe('NONE');
         continue;
       }
-      expect(route.Properties?.AuthorizationType, `${id} (${key})`).toBe('AWS_IAM');
+      // Everything else must be gated; the stack falls back to IAM when a pool is absent,
+      // which is the safe direction for a partial deploy.
+      expect(route.Properties?.AuthorizationType, `${id} (${key})`).not.toBe('NONE');
+    }
+  });
+
+  it('keeps every personal buyer route behind the pool', () => {
+    // The public route is `/search` exactly — not a prefix that `/buyer/...` could fall under.
+    const routes = templates.api.findResources('AWS::ApiGatewayV2::Route');
+    const buyerRoutes = Object.values(routes).filter((r) =>
+      String(r.Properties?.RouteKey ?? '').includes('/buyer/'),
+    );
+    expect(buyerRoutes.length).toBeGreaterThan(0);
+    for (const route of buyerRoutes) {
+      expect(route.Properties?.AuthorizationType).not.toBe('NONE');
     }
   });
 
