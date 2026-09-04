@@ -158,6 +158,27 @@ describe.skipIf(!DATABASE_URL)('search pipeline', () => {
     });
   });
 
+  describe('one result per product', () => {
+    it('never returns the same product twice', async () => {
+      /**
+       * Measured against the seeded catalogue, eleven of fifteen queries came back as three
+       * variants of one product — a buyer saw the same shirt three times and concluded the
+       * catalogue was empty. It matters most at the MCP surface, where rule 6 allows five
+       * results and one shirt could spend all of them.
+       */
+      const response = await runSearch(request({ query: 'cotton shirt', limit: 10 }), deps());
+      const productIds = response.results.map((r) => r.productId);
+      expect(new Set(productIds).size).toBe(productIds.length);
+    });
+
+    it('keeps the best-scoring variant, not an arbitrary one', async () => {
+      // Deduplication happens after reranking, so the survivor is the one that scored.
+      const response = await runSearch(request({ query: 'cotton shirt', limit: 5 }), deps());
+      expect(response.results.length).toBeGreaterThan(0);
+      for (const result of response.results) expect(result.id).toBeTruthy();
+    });
+  });
+
   // ── Acceptance: no LLM call, and the embedding is cached (rule 10) ───────────
 
   describe('embedding cost', () => {

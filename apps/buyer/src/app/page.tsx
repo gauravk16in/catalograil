@@ -63,7 +63,7 @@ export default function BuyerSearch() {
 
     try {
       setResponse(
-        await api.post<SearchResponse>('/internal/search', {
+        await api.post<SearchResponse>('/buyer/search', {
           query: value,
           filters: {},
           limit: 10,

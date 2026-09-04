@@ -175,3 +175,92 @@ export function templateFilename(template: CsvTemplate): string {
 export function escapeCsvValue(value: string): string {
   return /[",\n\r]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
 }
+
+/**
+ * What each column means, which values are accepted, and whether it is required.
+ *
+ * Shipped alongside the template rather than only living in a doc site, because a merchant
+ * opens the CSV in Excel and never sees the doc site. The template download writes this out
+ * as a companion file.
+ */
+export const COLUMN_DOCS: Readonly<Record<string, { required: boolean; note: string }>> = {
+  external_ref: {
+    required: true,
+    // The join key for the whole import, and the one merchants most often get wrong.
+    note: 'Your own product code. Re-importing the same value updates that product instead of creating a second one. For a variant product, every row of the same product shares this.',
+  },
+  name: { required: true, note: 'What a buyer would call it. Not a SKU.' },
+  brand: { required: false, note: 'Leave blank if unbranded.' },
+  description: {
+    required: false,
+    note: 'Plain sentences. This is the main thing search matches against, so describe what it is for, not just what it is.',
+  },
+  category_hint: {
+    required: false,
+    note: 'A rough category if you have one, e.g. "running shoes". We refine it automatically.',
+  },
+  price: { required: true, note: 'Rupees, e.g. 1899 or 1899.50. No symbols, no commas.' },
+  mrp: { required: false, note: 'Rupees. Must be at least the price if given.' },
+  stock: { required: true, note: 'Whole number. 0 hides it from search until restocked.' },
+  delivery_days: {
+    required: false,
+    note: 'Typical days to deliver. Buyers filter on this, and an item that cannot arrive in time is excluded rather than ranked lower — so an honest number wins more orders than an optimistic one.',
+  },
+  weight_grams: { required: false, note: 'Whole number, grams.' },
+  image_url_1: { required: true, note: 'Publicly reachable https URL. We fetch it once.' },
+  image_url_2: { required: false, note: 'Optional.' },
+  image_url_3: { required: false, note: 'Optional.' },
+  sku: { required: true, note: 'Unique within the product. This is what gets ordered.' },
+  option_axis_1_name: {
+    required: true,
+    note: 'What varies, e.g. "size". Up to three axes; use axes 2 and 3 only if you need them.',
+  },
+  option_axis_1_value: { required: true, note: 'This row’s value on that axis, e.g. "42".' },
+  option_axis_2_name: { required: false, note: 'Second axis, e.g. "colour".' },
+  option_axis_2_value: { required: false, note: 'Required if axis 2 is named.' },
+  option_axis_3_name: { required: false, note: 'Third axis, e.g. "fabric".' },
+  option_axis_3_value: { required: false, note: 'Required if axis 3 is named.' },
+};
+
+/**
+ * The companion guide written beside each template.
+ *
+ * Markdown rather than a sheet inside the CSV: a second sheet is impossible in CSV, and a
+ * commented header row breaks every parser including ours.
+ */
+export function buildTemplateGuide(template: CsvTemplate): string {
+  const headers = headersFor(template);
+  const lines = [
+    `# ${template === 'simple' ? 'Simple' : 'Variant'} products — CSV guide`,
+    '',
+    template === 'simple'
+      ? 'One row per product. Use this when a product has a single price and stock count.'
+      : 'One row per **variant**. Rows sharing an `external_ref` collapse into one product with several options — that is the part most people get wrong, so the sample file shows three rows becoming one three-option product.',
+    '',
+    '## Columns',
+    '',
+    '| Column | Required | Notes |',
+    '| --- | --- | --- |',
+  ];
+
+  for (const header of headers) {
+    const doc = COLUMN_DOCS[header];
+    lines.push(
+      `| \`${header}\` | ${doc?.required ? 'Yes' : 'No'} | ${doc?.note ?? ''} |`,
+    );
+  }
+
+  lines.push(
+    '',
+    '## Rules worth knowing before you upload',
+    '',
+    '- Headers must match exactly, in any order. A mismatch rejects the whole file rather than importing half of it.',
+    '- Money is in rupees, written plainly: `1899` or `1899.50`. No `₹`, no thousands separators.',
+    '- Re-importing a row with an `external_ref` you have used before **updates** that product. It never creates a duplicate.',
+    '- Changing only price or stock does not re-run indexing, so those updates appear in search within seconds.',
+    '- Nothing appears in search until it has been enriched and indexed. The Products page shows where each one is.',
+    '',
+  );
+
+  return lines.join('\n');
+}

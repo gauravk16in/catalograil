@@ -191,7 +191,31 @@ export async function runSearch(
   );
   rerankMs = performance.now() - rerankStart;
 
-  const results: SearchResultItem[] = ranked.slice(0, request.limit).map((result) => {
+  /**
+   * One result per product, keeping its best-scoring variant.
+   *
+   * D6 makes the variant the retrieval unit, which is right — a buyer asking for size 42
+   * should match the size-42 row rather than a product that happens to stock it. It is
+   * wrong for *presentation*: measured over the seeded catalogue, eleven of fifteen queries
+   * came back as three variants of one product, so a buyer saw the same shirt three times
+   * and concluded the catalogue was empty (docs/RELEVANCE_BASELINE.md, fix 1).
+   *
+   * It matters most at the MCP surface, where rule 6 allows five results total: without
+   * this, one shirt can spend all five.
+   *
+   * Deduplicated after reranking rather than before, so the variant that survives is the
+   * one that actually scored best, not the first one the query happened to return.
+   */
+  const seenProducts = new Set<string>();
+  const deduped = ranked.filter((result) => {
+    const unit = hydrated.get(result.candidate.id);
+    if (!unit) return false;
+    if (seenProducts.has(unit.productId)) return false;
+    seenProducts.add(unit.productId);
+    return true;
+  });
+
+  const results: SearchResultItem[] = deduped.slice(0, request.limit).map((result) => {
     const unit = hydrated.get(result.candidate.id)!;
     // Rule 7: the moment this price and stock were last known true, on every item.
     const asOf = unit.updatedAt.toISOString();

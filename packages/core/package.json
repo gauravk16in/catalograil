@@ -13,12 +13,13 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && tsx scripts/generate-templates.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "lint": "eslint src --no-error-on-unmatched-pattern",
-    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+    "clean": "rm -rf dist .turbo *.tsbuildinfo",
+    "generate:templates": "tsx scripts/generate-templates.ts"
   },
   "dependencies": {
     "zod": "^3.24.1",

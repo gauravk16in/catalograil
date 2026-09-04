@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { check, index, integer, jsonb, pgTable, text, uuid } from 'drizzle-orm/pg-core';
 import { createdAt, inList, tstz } from './_shared.js';
 import { merchants } from './merchants.js';
+import { products } from './catalog.js';
 
 export const INGESTION_JOB_STATUSES = ['queued', 'running', 'completed', 'failed'] as const;
 export type IngestionJobStatus = (typeof INGESTION_JOB_STATUSES)[number];
@@ -41,4 +42,38 @@ export const ingestionJobs = pgTable(
     check('ingestion_jobs_status_check', sql`${t.status} IN (${inList(INGESTION_JOB_STATUSES)})`),
     check('ingestion_jobs_template_check', sql`${t.template} IN ('simple', 'variant')`),
   ],
+);
+
+/**
+ * S5.4 — one row per stage transition, per product.
+ *
+ * Without this, "why is my product not showing up" is unanswerable, and it will be the most
+ * common support question a merchant asks. `searchable_units.embedding_status` says where a
+ * product ended up but not how it got there or what went wrong on the way, and by the time
+ * anyone looks the failing message has long since left the queue.
+ *
+ * Deliberately append-only and cheap to write: every worker adds a row, nothing updates one.
+ * Retention is a later concern — a catalogue of 10k products generates a few rows each, not
+ * a firehose.
+ */
+export const productPipelineEvents = pgTable(
+  'product_pipeline_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    productId: uuid('product_id')
+      .notNull()
+      .references(() => products.id, { onDelete: 'cascade' }),
+    /** ingestion | enrichment | embedding */
+    stage: text('stage').notNull(),
+    /** started | succeeded | failed | skipped */
+    status: text('status').notNull(),
+    /**
+     * What happened, in words a merchant can act on. "Image at position 2 returned 404" is
+     * useful; "EMBEDDING_FAILED" is not, and the code is already in `stage`/`status`.
+     */
+    message: text('message'),
+    durationMs: integer('duration_ms'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('product_pipeline_events_product_idx').on(t.productId, t.createdAt)],
 );

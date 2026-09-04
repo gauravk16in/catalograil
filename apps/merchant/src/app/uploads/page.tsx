@@ -127,9 +127,22 @@ export default function UploadsPage() {
           </p>
 
           <div className="flex flex-wrap gap-2">
+            {/*
+              A plain link to a static file, not an API call.
+
+              This used to hit `/merchant/uploads/templates/...`, which sits behind the
+              gateway's authorizer — so the browser got a 403 and the merchant got a button
+              that did nothing. The file is generated at build time from the same header
+              arrays the validator enforces, so it cannot drift from what we accept.
+            */}
             <Button variant="secondary">
-              <a href={`/merchant/uploads/templates/${template}`} download>
+              <a href={`/templates/${template}-products.csv`} download>
                 Download the {template} template
+              </a>
+            </Button>
+            <Button variant="secondary">
+              <a href={`/templates/${template}-products-guide.md`} download>
+                Column guide
               </a>
             </Button>
 

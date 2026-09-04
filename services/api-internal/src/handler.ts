@@ -42,10 +42,22 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   logger.appendKeys({ correlationId: event.requestContext.requestId });
 
   try {
-    if (
-      event.requestContext.http.method !== 'POST' ||
-      !event.rawPath.endsWith('/internal/search')
-    ) {
+    /**
+     * Three paths, one implementation.
+     *
+     * `/internal/search` is SigV4 for machine callers; `/merchant/search-preview` carries a
+     * merchant JWT and powers "Preview in AI"; `/buyer/search` carries a buyer JWT. They
+     * deliberately share this handler — a preview that ranked differently from the real
+     * search would be worse than no preview, and two copies of the query is how that
+     * happens. The gateway decides who may call which; this only decides what search means.
+     */
+    const path = event.rawPath.replace(/\/+$/, '');
+    const isSearchRoute =
+      path.endsWith('/internal/search') ||
+      path.endsWith('/merchant/search-preview') ||
+      path.endsWith('/buyer/search');
+
+    if (event.requestContext.http.method !== 'POST' || !isSearchRoute) {
       return json(404, { code: 'NOT_FOUND', message: `No route for ${event.rawPath}.` });
     }
 
