@@ -18,20 +18,29 @@
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "lint": "eslint src --no-error-on-unmatched-pattern",
-    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+    "clean": "rm -rf dist .turbo .drizzle *.tsbuildinfo",
+    "db:generate": "pnpm db:bundle-schema && drizzle-kit generate",
+    "db:migrate": "tsx src/migrate.ts",
+    "db:push": "pnpm db:bundle-schema && drizzle-kit push",
+    "db:studio": "pnpm db:bundle-schema && drizzle-kit studio",
+    "db:seed": "tsx src/seed.ts",
+    "db:bundle-schema": "tsx scripts/bundle-schema.ts"
   },
   "dependencies": {
     "@catalograil/core": "workspace:*",
-    "@aws-sdk/dsql-signer": "^3.716.0",
     "drizzle-orm": "^0.38.2",
-    "pg": "^8.13.1",
-    "postgres": "^3.4.5"
+    "postgres": "^3.4.5",
+    "@aws-sdk/rds-signer": "^3.716.0"
   },
   "devDependencies": {
     "@catalograil/config": "workspace:*",
     "@types/node": "^22.10.2",
     "eslint": "^9.17.0",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "drizzle-kit": "^0.30.1",
+    "dotenv": "^16.4.7",
+    "tsx": "^4.19.2",
+    "esbuild": "^0.24.2"
   }
 }

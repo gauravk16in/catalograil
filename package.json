@@ -16,7 +16,11 @@
     "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yaml,yml}\"",
     "clean": "turbo run clean && rm -rf node_modules",
     "verify:bedrock": "tsx scripts/verify-bedrock.ts",
-    "typecheck:scripts": "tsc -p scripts/tsconfig.json"
+    "typecheck:scripts": "tsc -p scripts/tsconfig.json",
+    "db:generate": "pnpm --filter @catalograil/db db:generate",
+    "db:migrate": "pnpm --filter @catalograil/db db:migrate",
+    "db:seed": "pnpm --filter @catalograil/db db:seed",
+    "db:studio": "pnpm --filter @catalograil/db db:studio"
   },
   "devDependencies": {
     "@catalograil/config": "workspace:*",
