@@ -183,6 +183,9 @@ importers:
 
   packages/aws:
     dependencies:
+      '@aws-sdk/client-dynamodb':
+        specifier: ^3.716.0
+        version: 3.1125.0
       '@aws-sdk/client-s3':
         specifier: ^3.716.0
         version: 3.1125.0
@@ -192,6 +195,9 @@ importers:
       '@aws-sdk/client-sqs':
         specifier: ^3.716.0
         version: 3.1125.0
+      '@aws-sdk/lib-dynamodb':
+        specifier: ^3.716.0
+        version: 3.1125.0(@aws-sdk/client-dynamodb@3.1125.0)
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.716.0
         version: 3.1125.0
@@ -375,6 +381,9 @@ importers:
         specifier: ^3.4.5
         version: 3.4.9
     devDependencies:
+      '@catalograil/aws':
+        specifier: workspace:*
+        version: link:../aws
       '@catalograil/config':
         specifier: workspace:*
         version: link:../config
@@ -476,6 +485,9 @@ importers:
       '@aws-sdk/lib-dynamodb':
         specifier: ^3.716.0
         version: 3.1125.0(@aws-sdk/client-dynamodb@3.1125.0)
+      '@catalograil/aws':
+        specifier: workspace:*
+        version: link:../../packages/aws
       '@catalograil/core':
         specifier: workspace:*
         version: link:../../packages/core

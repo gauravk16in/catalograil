@@ -56,6 +56,22 @@ export interface HybridSearchParams {
   readonly filters?: SearchFilters;
   /** Candidates returned for re-ranking, not results shown. */
   readonly limit?: number;
+  /**
+   * Cosine similarity a semantic match must reach to count at all, 0..1.
+   *
+   * Without this a vector search can never return nothing: an approximate index answers
+   * "what is nearest" and always has an answer, however far away it is. A nonsense query
+   * therefore comes back with a full page of confident-looking results, rule 8's
+   * `no_results_reason` never fires, and the calling model presents whatever it was handed
+   * as a genuine match — the precise failure this system is built to avoid.
+   *
+   * Off by default, because the right value depends on the embedding model's distance
+   * distribution and cannot be guessed: on real Cohere embeddings unrelated text typically
+   * sits around 0.1–0.3 similarity and a good match well above 0.5, but that must be
+   * measured on real catalogue data before a number is fixed here. The mechanism is in
+   * place so tuning it later is a configuration change rather than a rewrite.
+   */
+  readonly minSemanticSimilarity?: number;
 }
 
 export interface FusionCandidate {
@@ -111,7 +127,12 @@ interface Channel {
 function buildChannels(
   binder: Binder,
   predicates: string,
-  input: { queryLiteral: string | null; visualLiteral: string | null; queryText: string | null },
+  input: {
+    queryLiteral: string | null;
+    visualLiteral: string | null;
+    queryText: string | null;
+    minSemanticSimilarity?: number | undefined;
+  },
 ): Channel[] {
   const channels: Channel[] = [];
 
@@ -119,6 +140,11 @@ function buildChannels(
     // Bound once and referenced twice, so ~20KB of vector text crosses the wire a single
     // time rather than once per mention.
     const p = binder.bind(literal);
+    // `<=>` is cosine *distance*, so a similarity floor is a distance ceiling.
+    const floor =
+      input.minSemanticSimilarity != null
+        ? `\n          AND (${column} <=> ${p}::vector) <= ${binder.bind(1 - input.minSemanticSimilarity)}::float`
+        : '';
     channels.push({
       name,
       weight,
@@ -126,7 +152,7 @@ function buildChannels(
         SELECT id, RANK() OVER (ORDER BY ${column} <=> ${p}::vector) AS r
         FROM searchable_units
         WHERE ${predicates}
-          AND ${column} IS NOT NULL
+          AND ${column} IS NOT NULL${floor}
         ORDER BY ${column} <=> ${p}::vector
         LIMIT ${SEARCH_CANDIDATE_LIMIT}`,
     });
@@ -221,7 +247,12 @@ export async function hybridSearch(
 
   const predicateSql = predicates.join('\n          AND ');
 
-  const channels = buildChannels(binder, predicateSql, { queryLiteral, visualLiteral, queryText });
+  const channels = buildChannels(binder, predicateSql, {
+    queryLiteral,
+    visualLiteral,
+    queryText,
+    minSemanticSimilarity: params.minSemanticSimilarity,
+  });
 
   const channelCtes = channels
     .map((channel, i) => `channel_${i} AS (${channel.sql}\n      )`)

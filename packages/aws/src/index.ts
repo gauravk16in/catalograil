@@ -6,4 +6,5 @@
  * worker to get one.
  */
 export * from './aws.js';
+export * from './dynamo.js';
 export * from './memory.js';
