@@ -1,8 +1,10 @@
 import {
   EMBEDDING_DIMENSIONS,
   HNSW_EF_SEARCH,
+  HNSW_MAX_SCAN_TUPLES,
   RRF_WEIGHTS,
   SEARCH_CANDIDATE_LIMIT,
+  FLOOR_OVERFETCH,
   SEARCH_FUSION_LIMIT,
   SEARCH_RRF_K,
   AppError,
@@ -65,11 +67,13 @@ export interface HybridSearchParams {
    * `no_results_reason` never fires, and the calling model presents whatever it was handed
    * as a genuine match — the precise failure this system is built to avoid.
    *
-   * Off by default, because the right value depends on the embedding model's distance
-   * distribution and cannot be guessed: on real Cohere embeddings unrelated text typically
-   * sits around 0.1–0.3 similarity and a good match well above 0.5, but that must be
-   * measured on real catalogue data before a number is fixed here. The mechanism is in
-   * place so tuning it later is a configuration change rather than a rewrite.
+   * Applied *after* the query rather than as a SQL predicate, which matters. Pushed into
+   * the WHERE clause it turns "find the nearest hundred" into "prove nothing qualifies",
+   * and pgvector's iterative scan then walks the whole graph to establish a negative —
+   * measured at 50k units, that took a single query from ~5ms to 471ms, and
+   * `hnsw.max_scan_tuples` did not bound it. The channels already return their nearest
+   * hundred with distances attached, so filtering here costs nothing and the pathological
+   * "nothing matches" case is exactly as fast as any other query.
    */
   readonly minSemanticSimilarity?: number;
 }
@@ -127,12 +131,7 @@ interface Channel {
 function buildChannels(
   binder: Binder,
   predicates: string,
-  input: {
-    queryLiteral: string | null;
-    visualLiteral: string | null;
-    queryText: string | null;
-    minSemanticSimilarity?: number | undefined;
-  },
+  input: { queryLiteral: string | null; visualLiteral: string | null; queryText: string | null },
 ): Channel[] {
   const channels: Channel[] = [];
 
@@ -140,19 +139,17 @@ function buildChannels(
     // Bound once and referenced twice, so ~20KB of vector text crosses the wire a single
     // time rather than once per mention.
     const p = binder.bind(literal);
-    // `<=>` is cosine *distance*, so a similarity floor is a distance ceiling.
-    const floor =
-      input.minSemanticSimilarity != null
-        ? `\n          AND (${column} <=> ${p}::vector) <= ${binder.bind(1 - input.minSemanticSimilarity)}::float`
-        : '';
     channels.push({
       name,
       weight,
       sql: `
-        SELECT id, RANK() OVER (ORDER BY ${column} <=> ${p}::vector) AS r
+        SELECT
+          id,
+          RANK() OVER (ORDER BY ${column} <=> ${p}::vector) AS r,
+          (${column} <=> ${p}::vector) AS dist
         FROM searchable_units
         WHERE ${predicates}
-          AND ${column} IS NOT NULL${floor}
+          AND ${column} IS NOT NULL
         ORDER BY ${column} <=> ${p}::vector
         LIMIT ${SEARCH_CANDIDATE_LIMIT}`,
     });
@@ -174,7 +171,8 @@ function buildChannels(
       weight: RRF_WEIGHTS.lexical,
       sql: `
         SELECT id,
-               RANK() OVER (ORDER BY ts_rank_cd(tsv, websearch_to_tsquery('english', ${p})) DESC) AS r
+               RANK() OVER (ORDER BY ts_rank_cd(tsv, websearch_to_tsquery('english', ${p})) DESC) AS r,
+               NULL::float AS dist
         FROM searchable_units
         WHERE ${predicates}
           AND tsv @@ websearch_to_tsquery('english', ${p})
@@ -198,6 +196,22 @@ export async function hybridSearch(
 ): Promise<FusionCandidate[]> {
   const filters = params.filters ?? {};
   const limit = params.limit ?? SEARCH_FUSION_LIMIT;
+
+  /**
+   * Over-fetch when a relevance floor is in play.
+   *
+   * The floor is applied in the application rather than as a SQL predicate (see the filter
+   * at the bottom of this function for why), which means it runs *after* the outer LIMIT.
+   * A post-LIMIT filter can only shrink the page — it can never reach a qualifying row
+   * sitting below the cut. Measured: a `dashcam` query filled its top 30 with semantic-only
+   * rows that the floor then deleted, returning nothing while 46k lexical matches waited at
+   * rank 31 and below.
+   *
+   * Fetching a multiple and truncating after the filter gives the floor something to cut
+   * into. It is not a total guarantee — a page where every one of these rows fails the
+   * floor still comes back short — but that case means the floor is doing its job.
+   */
+  const fetchLimit = params.minSemanticSimilarity == null ? limit : limit * FLOOR_OVERFETCH;
 
   const queryLiteral = params.queryVector?.length ? toVectorLiteral(params.queryVector) : null;
   const visualLiteral = params.visualVector?.length ? toVectorLiteral(params.visualVector) : null;
@@ -251,7 +265,6 @@ export async function hybridSearch(
     queryLiteral,
     visualLiteral,
     queryText,
-    minSemanticSimilarity: params.minSemanticSimilarity,
   });
 
   const channelCtes = channels
@@ -262,7 +275,7 @@ export async function hybridSearch(
     .map(
       (channel, i) =>
         `SELECT id, ${binder.bind(channel.name)} AS channel, ` +
-        `${binder.bind(channel.weight)}::float AS w, r FROM channel_${i}`,
+        `${binder.bind(channel.weight)}::float AS w, r, dist FROM channel_${i}`,
     )
     .join('\n        UNION ALL\n        ');
 
@@ -283,11 +296,12 @@ export async function hybridSearch(
     SELECT
       id::text AS id,
       SUM(w / (${SEARCH_RRF_K}::float + r)) AS fusion,
-      ARRAY_AGG(DISTINCT channel) AS channels
+      ARRAY_AGG(DISTINCT channel) AS channels,
+      MIN(dist) AS best_distance
     FROM fused
     GROUP BY id
     ORDER BY fusion DESC
-    LIMIT ${binder.bind(limit)}`;
+    LIMIT ${binder.bind(fetchLimit)}`;
 
   const rows = await sql.begin(async (tx) => {
     /**
@@ -306,6 +320,22 @@ export async function hybridSearch(
      * them, and the result is thin through no fault of the data.
      */
     await tx.unsafe(`SET LOCAL hnsw.iterative_scan = relaxed_order`);
+
+    /**
+     * Bounds how far the iterative scan will go before giving up.
+     *
+     * Iterative scan and a relevance floor interact badly at the extreme: when *nothing*
+     * clears the floor — a nonsense query, which is exactly the case the floor exists for —
+     * the index keeps searching for a qualifying row that does not exist, and walks the
+     * whole graph to prove it. Measured at 50k units that took a single query to 780ms
+     * against a 200ms budget.
+     *
+     * Capping the scan turns "prove nothing matches" into "look hard, then stop". The cost
+     * is a genuine match buried deeper than this many tuples being missed, which for a
+     * filtered top-30 query is a far better trade than an unbounded worst case on every
+     * query that happens to match nothing.
+     */
+    await tx.unsafe(`SET LOCAL hnsw.max_scan_tuples = ${HNSW_MAX_SCAN_TUPLES}`);
 
     /**
      * Forces the vector indexes to be used, scoped to this transaction only.
@@ -329,10 +359,29 @@ export async function hybridSearch(
     return tx.unsafe(text, binder.values as never[]);
   });
 
-  return (rows as unknown as { id: string; fusion: string; channels: string[] }[]).map((row) => ({
-    id: row.id,
-    // postgres.js returns numeric aggregates as strings to avoid precision loss.
-    fusionScore: Number(row.fusion),
-    matchedChannels: row.channels,
-  }));
+  const floor = params.minSemanticSimilarity;
+
+  return (
+    rows as unknown as {
+      id: string;
+      fusion: string;
+      channels: string[];
+      best_distance: string | null;
+    }[]
+  )
+    .filter((row) => {
+      if (floor == null || row.best_distance == null) return true;
+      // A lexical hit is direct evidence — the buyer's own words appear in the listing —
+      // and is deliberately not gated on a vector agreeing with it.
+      if (row.channels.includes('lexical')) return true;
+      // `<=>` is cosine distance, so similarity is its complement.
+      return 1 - Number(row.best_distance) >= floor;
+    })
+    .slice(0, limit)
+    .map((row) => ({
+      id: row.id,
+      // postgres.js returns numeric aggregates as strings to avoid precision loss.
+      fusionScore: Number(row.fusion),
+      matchedChannels: row.channels,
+    }));
 }

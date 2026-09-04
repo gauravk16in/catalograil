@@ -42,13 +42,7 @@ const data = new DataStack(app, stackName('Data', config), {
 
 const sesFromAddress = process.env.SES_FROM_ADDRESS ?? 'no-reply@catalograil.example';
 
-/**
- * The Anthropic key for enrichment, held in Secrets Manager rather than as a Lambda
- * environment variable — an environment variable is readable by anyone who can describe
- * the function. Optional, so the stack deploys before the key exists; enrichment then
- * fails loudly on the missing key rather than the stack failing to deploy at all.
- */
-const anthropicSecretName = process.env.ANTHROPIC_API_KEY_SECRET_NAME;
+
 
 new WorkerStack(app, stackName('Worker', config), {
   env,
@@ -62,7 +56,6 @@ new WorkerStack(app, stackName('Worker', config), {
   uploadsBucket: data.uploadsBucket,
   exportsBucket: data.exportsBucket,
   sesFromAddress,
-  ...(anthropicSecretName ? { anthropicApiKeySecretName: anthropicSecretName } : {}),
 });
 
 const api = new ApiStack(app, stackName('Api', config), {

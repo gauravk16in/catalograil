@@ -4,13 +4,20 @@ import { EMBEDDING_DIMENSIONS } from '@catalograil/core';
 /**
  * The embedding port and the Bedrock implementation behind it.
  *
- * Everything here is shaped by what T1.2 actually measured, not by what D5 assumed:
+ * Everything here is shaped by what T1.2 measured against the real account rather than by
+ * what D5 assumed, and the shape has changed twice as access changed:
  *
- *   - Embed v4 refuses on-demand invocation. It is reachable only through the inference
- *     profile `global.cohere.embed-v4:0`; the bare model id is a ValidationException.
- *   - Text and image take *different request bodies on the same model*. Text uses the v3
- *     style `{ texts: [...] }`, image the v4 style `{ inputs: [{ content: [...] }] }`.
- *     This is the reason `embedTexts` and `embedImage` do not share a code path.
+ *   - D5 asked for Cohere Embed v4. It exists in ap-south-1 but is gated behind an AWS
+ *     Marketplace subscription that has not completed, so it is currently uncallable.
+ *   - What does work is Cohere Embed v3 for text and Titan Multimodal v1 for images, both
+ *     at 1024 dimensions — so `searchable_units` needs no change either way.
+ *
+ * The consequence worth understanding: text and images are now embedded by *different
+ * models into different vector spaces*. That is fine for how search works today, because
+ * `v_semantic`/`v_intent` and `v_visual` are separate columns compared only against a query
+ * embedded the same way. It does mean a *text* query cannot search the visual channel,
+ * which a single multimodal model would have allowed — that matters for Phase 2's image
+ * search, and is the reason to finish the Embed v4 subscription before then.
  *
  * See `MODELS.md`, which the verification script regenerates.
  */
@@ -35,9 +42,18 @@ export interface ImagePayload {
   readonly contentType: string;
 }
 
+/**
+ * Which request body a model expects. Bedrock has no way to ask, and getting it wrong is a
+ * ValidationException rather than anything descriptive, so it is stated explicitly.
+ */
+export type TextModelFamily = 'cohere' | 'titan';
+export type ImageModelFamily = 'cohere-v4' | 'titan-multimodal';
+
 export interface BedrockEmbedderOptions {
   readonly textModelId?: string;
   readonly imageModelId?: string;
+  readonly textFamily?: TextModelFamily;
+  readonly imageFamily?: ImageModelFamily;
   readonly dimensions?: number;
   /** D5 asks for int8. See the note in `parseEmbeddings` on what that does and does not buy. */
   readonly embeddingType?: 'int8' | 'float';
@@ -51,6 +67,8 @@ export interface BedrockInvoker {
 export class BedrockEmbedder implements Embedder {
   private readonly textModelId: string;
   private readonly imageModelId: string;
+  private readonly textFamily: TextModelFamily;
+  private readonly imageFamily: ImageModelFamily;
   private readonly dimensions: number;
   private readonly embeddingType: 'int8' | 'float';
 
@@ -58,8 +76,12 @@ export class BedrockEmbedder implements Embedder {
     private readonly invoker: BedrockInvoker,
     options: BedrockEmbedderOptions = {},
   ) {
-    this.textModelId = options.textModelId ?? 'global.cohere.embed-v4:0';
-    this.imageModelId = options.imageModelId ?? 'global.cohere.embed-v4:0';
+    // Defaults are what T1.2 verified as actually callable on this account, not what D5
+    // specified — an unreachable default fails at runtime rather than at configuration.
+    this.textModelId = options.textModelId ?? 'cohere.embed-english-v3';
+    this.imageModelId = options.imageModelId ?? 'amazon.titan-embed-image-v1';
+    this.textFamily = options.textFamily ?? inferTextFamily(this.textModelId);
+    this.imageFamily = options.imageFamily ?? inferImageFamily(this.imageModelId);
     this.dimensions = options.dimensions ?? EMBEDDING_DIMENSIONS;
     this.embeddingType = options.embeddingType ?? 'int8';
   }
@@ -78,15 +100,33 @@ export class BedrockEmbedder implements Embedder {
     const out: number[][] = [];
     for (let i = 0; i < texts.length; i += MAX_TEXTS_PER_CALL) {
       const batch = texts.slice(i, i + MAX_TEXTS_PER_CALL);
-      const response = await this.invoker.invoke(this.textModelId, {
-        // The v3-style body. T1.2 measured this as the one that works for text.
-        texts: batch,
-        input_type: inputType,
-        embedding_types: [this.embeddingType],
-        output_dimension: this.dimensions,
-      });
+      const vectors =
+        this.textFamily === 'cohere'
+          ? parseEmbeddings(
+              await this.invoker.invoke(this.textModelId, {
+                texts: batch,
+                input_type: inputType,
+                embedding_types: [this.embeddingType],
+              }),
+              this.embeddingType,
+            )
+          : /**
+             * Titan embeds one input per call — it has no batch form — so a batch becomes
+             * that many requests. Kept behind the same interface so the caller's batching
+             * logic need not know which model is configured, but it is precisely why Cohere
+             * is the better default for bulk work.
+             */
+            await Promise.all(
+              batch.map(async (text): Promise<number[]> => {
+                const response = await this.invoker.invoke(this.textModelId, {
+                  inputText: text,
+                  dimensions: this.dimensions,
+                  normalize: true,
+                });
+                return parseEmbeddings(response, this.embeddingType)[0] ?? [];
+              }),
+            );
 
-      const vectors = parseEmbeddings(response, this.embeddingType);
       if (vectors.length !== batch.length) {
         throw new Error(
           `Bedrock returned ${vectors.length} embeddings for ${batch.length} texts; refusing to guess the alignment.`,
@@ -98,17 +138,28 @@ export class BedrockEmbedder implements Embedder {
   }
 
   async embedImage(image: ImagePayload): Promise<number[] | null> {
-    const dataUri = `data:${image.contentType};base64,${Buffer.from(image.bytes).toString('base64')}`;
+    const base64 = Buffer.from(image.bytes).toString('base64');
 
-    const response = await this.invoker.invoke(this.imageModelId, {
-      // The v4-style body. Images are rejected by the `texts` shape above.
-      inputs: [{ content: [{ type: 'image', image: dataUri }] }],
-      input_type: 'image',
-      embedding_types: [this.embeddingType],
-      output_dimension: this.dimensions,
-    });
+    const body =
+      this.imageFamily === 'cohere-v4'
+        ? {
+            // Embed v4 takes a data URI inside a content block, and rejects the `texts`
+            // shape used for text on the very same model.
+            inputs: [
+              { content: [{ type: 'image', image: `data:${image.contentType};base64,${base64}` }] },
+            ],
+            input_type: 'image',
+            embedding_types: [this.embeddingType],
+            output_dimension: this.dimensions,
+          }
+        : {
+            // Titan Multimodal takes raw base64 with no data-URI prefix; including one is
+            // an opaque ValidationException rather than a helpful message.
+            inputImage: base64,
+            embeddingConfig: { outputEmbeddingLength: this.dimensions },
+          };
 
-    const vectors = parseEmbeddings(response, this.embeddingType);
+    const vectors = parseEmbeddings(await this.invoker.invoke(this.imageModelId, body), this.embeddingType);
     return vectors[0] ?? null;
   }
 }
@@ -124,6 +175,16 @@ export class BedrockEmbedder implements Embedder {
  */
 function parseEmbeddings(response: unknown, embeddingType: 'int8' | 'float'): number[][] {
   if (typeof response !== 'object' || response === null) return [];
+
+  /**
+   * Titan answers with `embedding` (singular, one vector); Cohere with `embeddings`
+   * (plural). Handling only the plural form silently produced zero vectors for every
+   * image — no error, just a null `v_visual` on every row, which looks exactly like a
+   * broken image URL and would have been very hard to attribute.
+   */
+  const single = (response as { embedding?: unknown }).embedding;
+  if (Array.isArray(single) && typeof single[0] === 'number') return [single as number[]];
+
   const embeddings = (response as { embeddings?: unknown }).embeddings;
 
   // `{ embeddings: number[][] }`
@@ -141,6 +202,14 @@ function parseEmbeddings(response: unknown, embeddingType: 'int8' | 'float'): nu
   }
 
   return [];
+}
+
+function inferTextFamily(modelId: string): TextModelFamily {
+  return modelId.includes('titan') ? 'titan' : 'cohere';
+}
+
+function inferImageFamily(modelId: string): ImageModelFamily {
+  return modelId.includes('titan') ? 'titan-multimodal' : 'cohere-v4';
 }
 
 // ─── Image fetching ───────────────────────────────────────────────────────────────
