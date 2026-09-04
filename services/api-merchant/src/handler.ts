@@ -6,6 +6,15 @@ import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda
 import { createUpload, getTemplate, type UploadDeps } from './handlers/uploads.js';
 import { deepHealth, shallowHealth } from './handlers/health.js';
 import { getProduct, listIngestionJobs, listProducts } from './handlers/lists.js';
+import {
+  connectPaymentConfig,
+  disconnectPaymentConfig,
+  readPaymentConfig,
+  testWebhook,
+  webhookUrlFor,
+  type PaymentConfigDeps,
+} from './handlers/payment-config.js';
+import { KmsTokenCipher } from '@catalograil/razorpay';
 import { getSession } from './handlers/session.js';
 import {
   archiveProduct,
@@ -139,6 +148,31 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       }
     }
 
+    // ── Razorpay connection (Block C) ───────────────────────────────────────────
+
+    if (path === '/merchant/payment-config') {
+      const merchantId = requireMerchantId(event);
+
+      if (method === 'GET') {
+        const config = await readPaymentConfig(deps().db, merchantId);
+        return json(200, {
+          ...config,
+          // The merchant needs this to register the webhook; it contains no secret.
+          webhookUrl: webhookUrlFor(process.env.API_BASE_URL ?? '', merchantId),
+        });
+      }
+      if (method === 'POST') {
+        return json(200, await connectPaymentConfig(paymentDeps(), merchantId, parseBody(event)));
+      }
+      if (method === 'DELETE') {
+        return json(200, await disconnectPaymentConfig(paymentDeps(), merchantId));
+      }
+    }
+
+    if (method === 'POST' && path === '/merchant/payment-config/test-webhook') {
+      return json(200, await testWebhook(paymentDeps(), requireMerchantId(event)));
+    }
+
     if (method === 'GET' && path === '/merchant/uploads') {
       return json(200, await listIngestionJobs(deps().db, requireMerchantId(event)));
     }
@@ -178,6 +212,28 @@ function parseBody(event: APIGatewayProxyEventV2): unknown {
     // round of "the API is down" when a form serialised badly.
     throw new AppError('VALIDATION_FAILED', 'Request body is not valid JSON.');
   }
+}
+
+let cachedPaymentDeps: Omit<PaymentConfigDeps, 'cipherFor'> | undefined;
+
+/**
+ * Payment dependencies, with a cipher built per merchant.
+ *
+ * `KmsTokenCipher` binds the merchant id as KMS encryption context, so a ciphertext
+ * encrypted for one merchant cannot be decrypted while claiming to be another — swapping
+ * rows fails loudly instead of handing over someone else's credentials. That binding is
+ * why the cipher is a factory rather than a singleton.
+ */
+function paymentDeps(): PaymentConfigDeps {
+  if (!cachedPaymentDeps) {
+    cachedPaymentDeps = {
+      db: getDb(),
+      clock: systemClock,
+      stage: process.env.STAGE ?? 'dev',
+    };
+  }
+  const keyId = required('KMS_TOKEN_KEY_ID');
+  return { ...cachedPaymentDeps, cipherFor: (id) => new KmsTokenCipher(keyId, id) };
 }
 
 let cachedProductDeps: ProductDeps | undefined;

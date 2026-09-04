@@ -61,6 +61,7 @@ function synth(env: 'dev' | 'prod' = 'dev') {
     queryCacheTable: data.tables.QueryCache!,
     searchLogsTable: data.tables.SearchLogs!,
     enrichmentQueue: queues.queues.enrichment,
+    tokenKey: data.tokenKey,
   });
 
   return {

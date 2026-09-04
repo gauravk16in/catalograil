@@ -11,6 +11,7 @@ import type * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import type * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import type * as rds from 'aws-cdk-lib/aws-rds';
+import type * as kms from 'aws-cdk-lib/aws-kms';
 import type * as s3 from 'aws-cdk-lib/aws-s3';
 import type * as sqs from 'aws-cdk-lib/aws-sqs';
 import type { Construct } from 'constructs';
@@ -30,6 +31,8 @@ export interface ApiStackProps extends StackProps {
   readonly searchLogsTable: dynamodb.ITable;
   /** Product writes enqueue enrichment; `/health/deep` also probes it. */
   readonly enrichmentQueue: sqs.IQueue;
+  /** Envelope-encrypts merchant Razorpay credentials (rule 3, S3.1). */
+  readonly tokenKey: kms.IKey;
   /**
    * Cognito pools (DC1). Optional so the API can still be synthesised and deployed before
    * the auth stack exists — without them the routes keep the IAM gate rather than becoming
@@ -75,10 +78,16 @@ export class ApiStack extends Stack {
         DDB_TABLE_QUERY_CACHE: props.queryCacheTable.tableName,
         BEDROCK_REGION: this.region,
         BEDROCK_TEXT_EMBED_MODEL_ID: 'global.cohere.embed-v4:0',
+        KMS_TOKEN_KEY_ID: props.tokenKey.keyId,
       },
     });
 
     proxy.grantConnect(merchantApi, 'catalograil');
+    /**
+     * Encrypt and decrypt, not manage. The API mints and reads credential ciphertexts and
+     * has no business rotating or deleting the key that protects every merchant's.
+     */
+    props.tokenKey.grantEncryptDecrypt(merchantApi);
     // Presigning a PUT requires the permission the URL will carry.
     props.uploadsBucket.grantPut(merchantApi);
     props.enrichmentQueue.grantSendMessages(merchantApi);
@@ -173,6 +182,13 @@ export class ApiStack extends Stack {
         ],
       }),
     );
+
+    /**
+     * Added after the API exists rather than in the environment above, because the Lambda
+     * is constructed first and its own endpoint is not knowable until then. The merchant
+     * needs this to register their webhook with Razorpay (S3.3).
+     */
+    merchantApi.addEnvironment('API_BASE_URL', this.api.apiEndpoint);
 
     const integration = new HttpLambdaIntegration('MerchantIntegration', merchantApi);
 

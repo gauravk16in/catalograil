@@ -16,8 +16,9 @@ import { authConfigured, useAuth } from '../lib/auth';
  */
 const PUBLIC_PATHS = ['/login', '/signup', '/verify-email', '/forgot-password', '/reset-password'];
 
+
 export function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { status } = useAuth();
+  const { status, merchantId } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
 
@@ -27,6 +28,17 @@ export function RequireAuth({ children }: { children: React.ReactNode }) {
     if (status === 'signedOut' && !isPublic) router.replace('/login');
     if (status === 'signedIn' && isPublic) router.replace('/');
   }, [status, isPublic, router]);
+
+  /**
+   * A signed-in user with no merchant id has confirmed their account but the
+   * post-confirmation trigger has not linked them yet — Cognito confirms first and runs the
+   * trigger after, so this window is real. Onboarding is where that resolves itself.
+   */
+  useEffect(() => {
+    if (status === 'signedIn' && !merchantId && !isPublic && pathname !== '/onboarding') {
+      router.replace('/onboarding');
+    }
+  }, [status, merchantId, isPublic, pathname, router]);
 
   /**
    * When Cognito is not configured, the guard stands down entirely.

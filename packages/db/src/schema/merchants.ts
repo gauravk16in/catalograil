@@ -83,6 +83,40 @@ export const merchantCapabilities = pgTable(
  * envelope-encrypted payload and are decrypted in memory only — see
  * `@catalograil/razorpay`. Nothing outside that package should read them.
  */
+/**
+ * S3.1 — how a merchant's Razorpay account is connected (DC2).
+ *
+ * Two methods behind one row. API keys are what merchants can use today; OAuth is what
+ * Partner approval unlocks later, and `merchant_tokens` still holds those. Everything
+ * downstream resolves through `getRazorpayClient(merchantId)`, so adding the OAuth branch
+ * changes this table and nothing else.
+ *
+ * The secret is KMS envelope-encrypted at rest and never leaves this table in plaintext.
+ * `key_secret_last4` exists precisely so the dashboard never needs the real value to show
+ * a merchant which key is connected.
+ */
+export const merchantPaymentConfig = pgTable('merchant_payment_config', {
+  merchantId: uuid('merchant_id')
+    .primaryKey()
+    .references(() => merchants.id, { onDelete: 'cascade' }),
+  /** api_keys | oauth */
+  method: text('method').notNull().default('api_keys'),
+  /** `rzp_test_...` or `rzp_live_...`. Not secret; identifies the key and its mode. */
+  keyId: text('key_id'),
+  /** KMS ciphertext. Decrypted in memory only, for the duration of one invocation. */
+  keySecretEncrypted: text('key_secret_encrypted'),
+  keySecretLast4: text('key_secret_last4'),
+  webhookSecretEncrypted: text('webhook_secret_encrypted'),
+  /** test | live, derived from the key prefix rather than asked for — merchants mistype it. */
+  mode: text('mode'),
+  /** unverified | verified | invalid */
+  status: text('status').notNull().default('unverified'),
+  verifiedAt: tstz('verified_at'),
+  /** Why the last verification failed, for the dashboard to show. Never a credential. */
+  lastError: text('last_error'),
+  updatedAt: updatedAt(),
+});
+
 export const merchantTokens = pgTable(
   'merchant_tokens',
   {
