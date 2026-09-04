@@ -65,7 +65,7 @@ export function createFunction(
      * value. This is the same outcome with one resource instead of two.
      */
     logGroup: new logs.LogGroup(scope, `${id}Logs`, {
-      logGroupName: `/aws/lambda/catalograil-${config.name}-${id.toLowerCase()}`,
+      logGroupName: `/aws/lambda/${config.resourcePrefix}-${config.name}-${id.toLowerCase()}`,
       retention:
         config.name === 'prod' ? logs.RetentionDays.ONE_MONTH : logs.RetentionDays.ONE_WEEK,
       removalPolicy: config.name === 'prod' ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,

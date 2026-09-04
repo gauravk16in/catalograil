@@ -56,7 +56,7 @@ export class ApiStack extends Stack {
     props.uploadsBucket.grantPut(merchantApi);
 
     this.api = new apigw.HttpApi(this, 'MerchantHttpApi', {
-      apiName: `catalograil-${config.name}-merchant`,
+      apiName: `${config.resourcePrefix}-${config.name}-merchant`,
       description: 'Merchant-facing API',
       corsPreflight: {
         allowOrigins: config.name === 'prod' ? ['https://merchant.catalograil.com'] : ['*'],

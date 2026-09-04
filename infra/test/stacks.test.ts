@@ -19,6 +19,9 @@ import { WorkerStack } from '../stacks/worker-stack.js';
  * reachable only through the proxy (rule 11).
  */
 
+/** Computed once so every assertion names the same prefix the stacks themselves used. */
+const DEV_PREFIX = resolveEnv(new App({ context: { env: 'dev' } })).resourcePrefix;
+
 function synth(env: 'dev' | 'prod' = 'dev') {
   const app = new App({ context: { env } });
   const config = resolveEnv(app);
@@ -162,11 +165,11 @@ describe('queue stack (T1.4)', () => {
 
     for (const name of QUEUE_NAMES) {
       templates.queues.hasResourceProperties('AWS::SQS::Queue', {
-        QueueName: `catalograil-dev-${name}`,
+        QueueName: `${DEV_PREFIX}-dev-${name}`,
         RedrivePolicy: { maxReceiveCount: 3 },
       });
       templates.queues.hasResourceProperties('AWS::SQS::Queue', {
-        QueueName: `catalograil-dev-${name}-dlq`,
+        QueueName: `${DEV_PREFIX}-dev-${name}-dlq`,
       });
     }
   });
@@ -184,7 +187,7 @@ describe('queue stack (T1.4)', () => {
 
     for (const name of QUEUE_NAMES) {
       templates.queues.hasResourceProperties('AWS::CloudWatch::Alarm', {
-        AlarmName: `catalograil-dev-${name}-dlq-not-empty`,
+        AlarmName: `${DEV_PREFIX}-dev-${name}-dlq-not-empty`,
         MetricName: 'ApproximateNumberOfMessagesVisible',
         Threshold: 0,
         ComparisonOperator: 'GreaterThanThreshold',
@@ -275,7 +278,7 @@ describe('data stack (T1.3)', () => {
       'rate-limits',
     ]) {
       templates.data.hasResourceProperties('AWS::DynamoDB::Table', {
-        TableName: `catalograil-dev-${suffix}`,
+        TableName: `${DEV_PREFIX}-dev-${suffix}`,
         BillingMode: 'PAY_PER_REQUEST',
         TimeToLiveSpecification: { AttributeName: 'ttl', Enabled: true },
       });
@@ -314,7 +317,7 @@ describe('data stack (T1.3)', () => {
   it('creates a rotating KMS key for merchant tokens (rule 3)', () => {
     templates.data.hasResourceProperties('AWS::KMS::Key', { EnableKeyRotation: true });
     templates.data.hasResourceProperties('AWS::KMS::Alias', {
-      AliasName: 'alias/catalograil-dev-tokens',
+      AliasName: `alias/${DEV_PREFIX}-dev-tokens`,
     });
   });
 
