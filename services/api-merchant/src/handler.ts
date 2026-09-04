@@ -1,5 +1,5 @@
 import { Logger } from '@aws-lambda-powertools/logger';
-import { AppError, systemClock } from '@catalograil/core';
+import { AppError, requireMerchant, systemClock } from '@catalograil/core';
 import { getDb } from '@catalograil/db';
 import { S3ObjectStore } from '@catalograil/aws';
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
@@ -35,12 +35,14 @@ function deps(): UploadDeps {
 /**
  * Merchant HTTP API.
  *
- * **The caller's merchant identity is not yet authenticated.** T1.6 replaces this with a
- * session derived from the Razorpay OAuth flow; until then the routes sit behind IAM
- * authorization at the gateway, because `uploadKey` derives an S3 prefix from the merchant
- * id — trusting a client-supplied one would let any caller write into any merchant's
- * prefix. The header read below is a development affordance behind that gate, not an
- * authentication mechanism, and the gateway is what makes it safe.
+ * Every route below `/merchant` is authenticated by the merchant Cognito pool's JWT
+ * authorizer at the gateway, and the caller's identity comes from the validated claim
+ * rather than from anything in the request. That matters most for `POST /merchant/uploads`,
+ * which derives an S3 prefix from the merchant id: a client-supplied id there would let
+ * any caller write into any merchant's prefix.
+ *
+ * `/health` is the one unauthenticated route, and it deliberately returns nothing that
+ * belongs to anybody.
  */
 export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
   const correlationId = event.requestContext.requestId;
@@ -197,12 +199,17 @@ function productDeps(): ProductDeps {
   return cachedProductDeps;
 }
 
+/**
+ * The merchant this request is for, from the verified JWT claim.
+ *
+ * This used to read `x-merchant-id` from the headers. Any caller past the gateway could
+ * act as any merchant by editing one value — horizontal privilege escalation whose only
+ * mitigation was that IAM authorization kept browsers out entirely, which is also why the
+ * dashboards could not work. The claim is validated by API Gateway before this Lambda
+ * runs, and `requireMerchant` never consults the request for an identity.
+ */
 function requireMerchantId(event: APIGatewayProxyEventV2): string {
-  const merchantId = event.headers['x-merchant-id'];
-  if (!merchantId) {
-    throw new AppError('UNAUTHENTICATED', 'No merchant session. (T1.6 replaces this header.)');
-  }
-  return merchantId;
+  return requireMerchant(event as never).id;
 }
 
 function json(statusCode: number, body: unknown): APIGatewayProxyResultV2 {

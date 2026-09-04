@@ -26,6 +26,8 @@ export const buyers = pgTable(
   'buyers',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    /** The Cognito user's `sub` from the buyer pool. See merchants.cognitoSub (DC1). */
+    cognitoSub: text('cognito_sub'),
     name: text('name'),
     email: text('email'),
     phone: text('phone'),
@@ -34,7 +36,11 @@ export const buyers = pgTable(
     defaultAddressId: uuid('default_address_id'),
     createdAt: createdAt(),
   },
-  (t) => [uniqueIndex('buyers_email_key').on(t.email), uniqueIndex('buyers_phone_key').on(t.phone)],
+  (t) => [
+    uniqueIndex('buyers_email_key').on(t.email),
+    uniqueIndex('buyers_phone_key').on(t.phone),
+    uniqueIndex('buyers_cognito_sub_key').on(t.cognitoSub),
+  ],
 );
 
 export const buyerAddresses = pgTable(

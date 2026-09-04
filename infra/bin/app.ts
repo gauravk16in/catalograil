@@ -3,6 +3,7 @@ import { App } from 'aws-cdk-lib';
 import { resolveEnv, stackName } from '../lib/env.js';
 import { ApiStack } from '../stacks/api-stack.js';
 import { DataStack } from '../stacks/data-stack.js';
+import { AuthStack } from '../stacks/auth-stack.js';
 import { FrontendStack } from '../stacks/frontend-stack.js';
 import { NetworkStack } from '../stacks/network-stack.js';
 import { QueueStack } from '../stacks/queue-stack.js';
@@ -44,7 +45,7 @@ const sesFromAddress = process.env.SES_FROM_ADDRESS ?? 'no-reply@catalograil.exa
 
 
 
-new WorkerStack(app, stackName('Worker', config), {
+const workers = new WorkerStack(app, stackName('Worker', config), {
   env,
   config,
   vpc: network.vpc,
@@ -58,6 +59,17 @@ new WorkerStack(app, stackName('Worker', config), {
   sesFromAddress,
 });
 
+/**
+ * Identity (DC1). Depends on the worker stack for its post-confirmation triggers, and the
+ * API stack depends on it for the JWT authorizers — so the order is workers, auth, API.
+ */
+const auth = new AuthStack(app, stackName('Auth', config), {
+  env,
+  config,
+  merchantPostConfirmation: workers.merchantPostConfirmation,
+  buyerPostConfirmation: workers.buyerPostConfirmation,
+});
+
 const api = new ApiStack(app, stackName('Api', config), {
   env,
   config,
@@ -68,6 +80,10 @@ const api = new ApiStack(app, stackName('Api', config), {
   queryCacheTable: data.tables.QueryCache!,
   searchLogsTable: data.tables.SearchLogs!,
   enrichmentQueue: queues.queues.enrichment,
+  merchantPool: auth.merchantPool,
+  merchantPoolClient: auth.merchantClient,
+  buyerPool: auth.buyerPool,
+  buyerPoolClient: auth.buyerClient,
 });
 
 /**

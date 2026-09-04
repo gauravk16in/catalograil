@@ -10,8 +10,7 @@ import {
   pgTable,
   primaryKey,
   text,
-  uuid,
-} from 'drizzle-orm/pg-core';
+  uuid, uniqueIndex } from 'drizzle-orm/pg-core';
 import { createdAt, inList, tstz, updatedAt } from './_shared.js';
 
 export const merchants = pgTable(
@@ -20,7 +19,25 @@ export const merchants = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     businessName: text('business_name').notNull(),
     legalName: text('legal_name'),
+    /**
+     * Unique, because under DC1 this is the identity anchor.
+     *
+     * Cognito's merchant pool signs in by email, and the post-confirmation trigger
+     * attaches a confirming user to an existing merchant by conflicting on this column —
+     * which is what lets a seeded or previously-created merchant keep its catalogue
+     * instead of being orphaned behind a duplicate account. Without the constraint that
+     * upsert has nothing to match and the whole sign-up fails.
+     */
     contactEmail: text('contact_email').notNull(),
+    /**
+     * The Cognito user's `sub` (DC1).
+     *
+     * Nullable because identity and payment connection are now separate concerns: a
+     * merchant row can exist before a Cognito user does — seeded catalogues and the rows
+     * the old Razorpay OAuth flow created both predate one — and S2.4 backfills them.
+     * Unique, so two Cognito users can never resolve to the same merchant.
+     */
+    cognitoSub: text('cognito_sub'),
     contactPhone: text('contact_phone'),
     gstin: text('gstin'),
     gstinVerified: boolean('gstin_verified').default(false).notNull(),
@@ -35,6 +52,8 @@ export const merchants = pgTable(
   },
   (t) => [
     index('merchants_status_created_idx').on(t.status, t.createdAt),
+    uniqueIndex('merchants_cognito_sub_key').on(t.cognitoSub),
+    uniqueIndex('merchants_contact_email_key').on(t.contactEmail),
     check('merchants_status_check', sql`${t.status} IN (${inList(MERCHANT_STATUSES)})`),
   ],
 );

@@ -37,6 +37,8 @@ export interface WorkerStackProps extends StackProps {
  */
 export class WorkerStack extends Stack {
   readonly migrationFunction: lambda.Function;
+  readonly merchantPostConfirmation!: lambda.Function;
+  readonly buyerPostConfirmation!: lambda.Function;
 
   constructor(scope: Construct, id: string, props: WorkerStackProps) {
     super(scope, id, props);
@@ -143,6 +145,59 @@ export class WorkerStack extends Stack {
     // Claude runs on Bedrock, so enrichment needs the same grant the embedding worker has
     // rather than a secret holding an Anthropic key.
     grantBedrock(enrichment);
+
+    /**
+     * Cognito post-confirmation triggers (S2.2).
+     *
+     * They live in the worker stack rather than the auth stack because they write to
+     * Aurora, so they need the VPC, the security group and the proxy grant this stack
+     * already wires. The auth stack takes them as a prop, which also keeps the dependency
+     * pointing one way: auth depends on workers, never the reverse.
+     */
+    for (const [id, exportName] of [
+      ['MerchantPostConfirmation', 'merchantHandler'],
+      ['BuyerPostConfirmation', 'buyerHandler'],
+    ] as const) {
+      const fn = createFunction(this, id, {
+        config,
+        entry: path.join(REPO_ROOT, 'services/workers/auth-triggers/src/handler.ts'),
+        handler: exportName,
+        vpc,
+        securityGroups: [props.lambdaSecurityGroup],
+        /**
+         * Five seconds, not the default.
+         *
+         * Cognito gives a trigger five seconds and fails the sign-up if it overruns, so a
+         * longer Lambda timeout would only convert a clear Cognito error into a confusing
+         * one. A cold Aurora Serverless v2 cluster can exceed this; that is a real
+         * limitation of resuming from zero ACU and is why dev keeps a floor above nothing
+         * once merchants are signing up.
+         */
+        timeout: Duration.seconds(5),
+        memorySize: 512,
+        environment: databaseEnvironment(props.proxy.endpoint),
+      });
+
+      grantDatabase(props.proxy, fn);
+
+      /**
+       * Writing `custom:merchant_id` back onto the user requires admin permission on the
+       * pool. Scoped by a tag rather than by arn because the pool does not exist yet when
+       * this stack is synthesised — the auth stack depends on these functions.
+       */
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ['cognito-idp:AdminUpdateUserAttributes'],
+          resources: ['*'],
+          conditions: {
+            StringEquals: { 'aws:ResourceAccount': this.account },
+          },
+        }),
+      );
+
+      if (id === 'MerchantPostConfirmation') this.merchantPostConfirmation = fn;
+      else this.buyerPostConfirmation = fn;
+    }
 
     // ── Migration (operational, not a queue consumer) ───────────────────────────
     /**

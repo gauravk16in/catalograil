@@ -71,6 +71,7 @@ function defaultHttpStatus(code: ErrorCode): number {
     case 'CONFLICT':
     case 'OUT_OF_STOCK':
     case 'PRICE_CHANGED':
+    case 'ACCOUNT_NOT_LINKED':
       return 409;
     case 'RATE_LIMITED':
       return 429;
