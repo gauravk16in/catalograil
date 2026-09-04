@@ -1,3 +1,36 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/*
+ * Two neutral ramps and one accent, defined as tokens so a colour is chosen once.
+ * Light only for now: a merchant dashboard is used in an office in daylight, and a
+ * half-done dark mode reads worse than none.
+ */
+:root {
+  --bg: 0 0% 100%;
+  --surface: 220 20% 98.5%;
+  --border: 220 13% 91%;
+  --text: 222 22% 12%;
+  --muted: 220 9% 46%;
+  --accent: 243 75% 59%;
+  --accent-soft: 243 100% 97%;
+  --ok: 158 64% 32%;
+  --ok-soft: 152 76% 96%;
+  --warn: 25 90% 40%;
+  --warn-soft: 34 100% 96%;
+  --danger: 0 72% 45%;
+  --danger-soft: 0 86% 97%;
+}
+
+body {
+  background: hsl(var(--surface));
+  color: hsl(var(--text));
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Focus is never removed, only restyled — keyboard navigation has to stay visible. */
+:focus-visible {
+  outline: 2px solid hsl(var(--accent));
+  outline-offset: 2px;
+}

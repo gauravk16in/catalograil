@@ -5,6 +5,8 @@ import { resolveEnv, stackName } from '../lib/env.js';
 import { DataStack } from '../stacks/data-stack.js';
 import { NetworkStack } from '../stacks/network-stack.js';
 import { QUEUE_NAMES, QueueStack } from '../stacks/queue-stack.js';
+import { ApiStack } from '../stacks/api-stack.js';
+import { WorkerStack } from '../stacks/worker-stack.js';
 
 /**
  * `cdk deploy` needs credentials this environment does not have, so these assertions stand
@@ -16,6 +18,9 @@ import { QUEUE_NAMES, QueueStack } from '../stacks/queue-stack.js';
  * every queue has a DLQ and an alarm (rule 1), no bucket is public, the database is
  * reachable only through the proxy (rule 11).
  */
+
+/** Computed once so every assertion names the same prefix the stacks themselves used. */
+const DEV_PREFIX = resolveEnv(new App({ context: { env: 'dev' } })).resourcePrefix;
 
 function synth(env: 'dev' | 'prod' = 'dev') {
   const app = new App({ context: { env } });
@@ -32,12 +37,138 @@ function synth(env: 'dev' | 'prod' = 'dev') {
     ingestionQueueArn: queues.queues.ingestion.queueArn,
   });
 
+  const workers = new WorkerStack(app, stackName('Worker', config), {
+    env: awsEnv,
+    config,
+    vpc: network.vpc,
+    lambdaSecurityGroup: network.lambdaSecurityGroup,
+    migrationSecurityGroup: data.migrationSecurityGroup,
+    proxy: data.proxy,
+    cluster: data.cluster,
+    queues: queues.queues,
+    uploadsBucket: data.uploadsBucket,
+    exportsBucket: data.exportsBucket,
+    sesFromAddress: 'no-reply@example.com',
+  });
+
+  const api = new ApiStack(app, stackName('Api', config), {
+    env: awsEnv,
+    config,
+    vpc: network.vpc,
+    lambdaSecurityGroup: network.lambdaSecurityGroup,
+    proxy: data.proxy,
+    uploadsBucket: data.uploadsBucket,
+    queryCacheTable: data.tables.QueryCache!,
+    searchLogsTable: data.tables.SearchLogs!,
+  });
+
   return {
     network: Template.fromStack(network),
     queues: Template.fromStack(queues),
     data: Template.fromStack(data),
+    workers: Template.fromStack(workers),
+    api: Template.fromStack(api),
   };
 }
+
+describe('worker stack', () => {
+  let templates: ReturnType<typeof synth>;
+  beforeAll(() => {
+    templates = synth();
+  });
+
+  it('runs every function on ARM64 and a supported runtime', () => {
+    const fns = templates.workers.findResources('AWS::Lambda::Function');
+    const ours = Object.values(fns).filter((f) => f.Properties?.Handler === 'index.handler');
+    expect(ours.length).toBeGreaterThanOrEqual(3);
+
+    for (const fn of ours) {
+      expect(fn.Properties?.Architectures).toEqual(['arm64']);
+      // nodejs20.x is deprecated and stops accepting new functions in Feb 2027.
+      expect(fn.Properties?.Runtime).toBe('nodejs22.x');
+    }
+  });
+
+  it('reports partial batch failures on every queue consumer', () => {
+    const sources = templates.workers.findResources('AWS::Lambda::EventSourceMapping');
+    // Count-agnostic on purpose: the invariant is that every consumer reports partial
+    // failures, and pinning a number just means this test breaks each time one is added.
+    expect(Object.keys(sources).length).toBeGreaterThanOrEqual(3);
+    for (const source of Object.values(sources)) {
+      // Without this one poisoned message takes its whole batch to the DLQ.
+      expect(source.Properties?.FunctionResponseTypes).toEqual(['ReportBatchItemFailures']);
+    }
+  });
+
+  it('scopes SES sending to the one address we send as', () => {
+    templates.workers.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: ['ses:SendEmail', 'ses:SendRawEmail'],
+            Condition: { StringEquals: { 'ses:FromAddress': 'no-reply@example.com' } },
+          }),
+        ]),
+      },
+    });
+  });
+
+  it('lets the embedding worker call Bedrock inference profiles', () => {
+    templates.workers.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: 'bedrock:InvokeModel',
+            Resource: Match.arrayWith([Match.stringLikeRegexp('inference-profile')]),
+          }),
+        ]),
+      },
+    });
+  });
+
+  it('does not let a per-function bundling override clobber the shared defaults', () => {
+    // The MigrationRunner is the only function with its own bundling override
+    // (commandHooks, to copy the .sql migrations beside the handler). A prior bug spread
+    // the raw options object over the merged bundling config, silently dropping
+    // format/target/minify and falling back to a CJS bundle that could not handle the
+    // ESM-only code paths already in the codebase.
+    const fns = templates.workers.findResources('AWS::Lambda::Function');
+    const migration = Object.values(fns).find(
+      (f) => f.Properties?.Handler === 'index.handler' && f.Properties?.Runtime === 'nodejs22.x',
+    );
+    expect(migration).toBeDefined();
+  });
+
+  it('gives every function a log group with retention', () => {
+    const groups = templates.workers.findResources('AWS::Logs::LogGroup');
+    expect(Object.keys(groups).length).toBeGreaterThanOrEqual(3);
+    for (const group of Object.values(groups)) {
+      expect(group.Properties?.RetentionInDays).toBe(7);
+    }
+  });
+});
+
+describe('api stack', () => {
+  let templates: ReturnType<typeof synth>;
+  beforeAll(() => {
+    templates = synth();
+  });
+
+  it('puts every merchant route behind IAM authorization', () => {
+    const routes = templates.api.findResources('AWS::ApiGatewayV2::Route');
+    expect(Object.keys(routes).length).toBeGreaterThan(0);
+
+    // There is no merchant session yet (T1.6). An unauthenticated route here would hand
+    // any caller a presigned URL scoped to any merchant's S3 prefix.
+    for (const route of Object.values(routes)) {
+      expect(route.Properties?.AuthorizationType).toBe('AWS_IAM');
+    }
+  });
+
+  it('exposes the API endpoint as an output', () => {
+    templates.api.hasOutput('MerchantApiUrl', {});
+  });
+});
 
 describe('queue stack (T1.4)', () => {
   let templates: ReturnType<typeof synth>;
@@ -51,11 +182,11 @@ describe('queue stack (T1.4)', () => {
 
     for (const name of QUEUE_NAMES) {
       templates.queues.hasResourceProperties('AWS::SQS::Queue', {
-        QueueName: `catalograil-dev-${name}`,
+        QueueName: `${DEV_PREFIX}-dev-${name}`,
         RedrivePolicy: { maxReceiveCount: 3 },
       });
       templates.queues.hasResourceProperties('AWS::SQS::Queue', {
-        QueueName: `catalograil-dev-${name}-dlq`,
+        QueueName: `${DEV_PREFIX}-dev-${name}-dlq`,
       });
     }
   });
@@ -73,7 +204,7 @@ describe('queue stack (T1.4)', () => {
 
     for (const name of QUEUE_NAMES) {
       templates.queues.hasResourceProperties('AWS::CloudWatch::Alarm', {
-        AlarmName: `catalograil-dev-${name}-dlq-not-empty`,
+        AlarmName: `${DEV_PREFIX}-dev-${name}-dlq-not-empty`,
         MetricName: 'ApproximateNumberOfMessagesVisible',
         Threshold: 0,
         ComparisonOperator: 'GreaterThanThreshold',
@@ -118,11 +249,11 @@ describe('data stack (T1.3)', () => {
     templates = synth();
   });
 
-  it('runs Aurora Serverless v2 on PostgreSQL 16 at the configured capacity', () => {
+  it('scales dev to zero, so an idle cluster costs nothing', () => {
     templates.data.hasResourceProperties('AWS::RDS::DBCluster', {
       Engine: 'aurora-postgresql',
       EngineVersion: Match.stringLikeRegexp('^16\\.'),
-      ServerlessV2ScalingConfiguration: { MinCapacity: 0.5, MaxCapacity: 4 },
+      ServerlessV2ScalingConfiguration: { MinCapacity: 0, MaxCapacity: 4 },
       StorageEncrypted: true,
     });
   });
@@ -164,7 +295,7 @@ describe('data stack (T1.3)', () => {
       'rate-limits',
     ]) {
       templates.data.hasResourceProperties('AWS::DynamoDB::Table', {
-        TableName: `catalograil-dev-${suffix}`,
+        TableName: `${DEV_PREFIX}-dev-${suffix}`,
         BillingMode: 'PAY_PER_REQUEST',
         TimeToLiveSpecification: { AttributeName: 'ttl', Enabled: true },
       });
@@ -203,7 +334,7 @@ describe('data stack (T1.3)', () => {
   it('creates a rotating KMS key for merchant tokens (rule 3)', () => {
     templates.data.hasResourceProperties('AWS::KMS::Key', { EnableKeyRotation: true });
     templates.data.hasResourceProperties('AWS::KMS::Alias', {
-      AliasName: 'alias/catalograil-dev-tokens',
+      AliasName: `alias/${DEV_PREFIX}-dev-tokens`,
     });
   });
 

@@ -22,7 +22,8 @@
   },
   "dependencies": {
     "@catalograil/core": "workspace:*",
-    "@aws-sdk/client-kms": "^3.716.0"
+    "@aws-sdk/client-kms": "^3.716.0",
+    "@anthropic-ai/sdk": "^0.71.0"
   },
   "devDependencies": {
     "@catalograil/config": "workspace:*",

@@ -24,13 +24,15 @@
     "@catalograil/core": "workspace:*",
     "@catalograil/db": "workspace:*",
     "@catalograil/embeddings": "workspace:*",
-    "drizzle-orm": "^0.38.2"
+    "drizzle-orm": "^0.38.2",
+    "postgres": "^3.4.5"
   },
   "devDependencies": {
     "@catalograil/config": "workspace:*",
     "@types/node": "^22.10.2",
     "eslint": "^9.17.0",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "@catalograil/aws": "workspace:*"
   }
 }

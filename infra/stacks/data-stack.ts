@@ -30,6 +30,14 @@ export class DataStack extends Stack {
   readonly cluster: rds.DatabaseCluster;
   readonly databaseSecurityGroup: ec2.SecurityGroup;
   readonly proxySecurityGroup: ec2.SecurityGroup;
+  /**
+   * The administrative path into the cluster, used by the migration Lambda only.
+   *
+   * Created here rather than in the worker stack that consumes it, for the same reason the
+   * other two are: an ingress rule added from another stack points that stack back at this
+   * one, and this one already depends on it.
+   */
+  readonly migrationSecurityGroup: ec2.SecurityGroup;
   readonly proxy: rds.DatabaseProxy;
   readonly tokenKey: kms.Key;
   readonly uploadsBucket: s3.Bucket;
@@ -56,6 +64,12 @@ export class DataStack extends Stack {
       allowAllOutbound: false,
     });
 
+    this.migrationSecurityGroup = new ec2.SecurityGroup(this, 'MigrationSecurityGroup', {
+      vpc,
+      description: 'Migration Lambda: direct cluster access for DDL',
+      allowAllOutbound: true,
+    });
+
     this.proxySecurityGroup.addIngressRule(
       props.lambdaSecurityGroup,
       ec2.Port.tcp(5432),
@@ -70,10 +84,27 @@ export class DataStack extends Stack {
       'Only RDS Proxy may connect to Aurora',
     );
 
+    // The one exception, and it is deliberate: migrations run DDL and set up the IAM grant
+    // the proxy path depends on, so they cannot themselves go through the proxy.
+    this.databaseSecurityGroup.addIngressRule(
+      this.migrationSecurityGroup,
+      ec2.Port.tcp(5432),
+      'Migration Lambda runs DDL directly against the cluster',
+    );
+
     // ── Aurora Serverless v2 ────────────────────────────────────────────────────
     this.cluster = new rds.DatabaseCluster(this, 'Catalog', {
+      /**
+       * 16.13, not the 16.4 D1 was written against.
+       *
+       * 16.4 is no longer offered in ap-south-1 — CREATE_FAILED on the first deploy
+       * attempt named it directly. Available versions vary by region and by when AWS
+       * retires an old minor, so 16.13 is the newest this CDK release recognises rather
+       * than a version pinned in the plan; ap-south-1 also offers 16.14 at time of
+       * writing, one minor ahead of what CDK's enum knows about.
+       */
       engine: rds.DatabaseClusterEngine.auroraPostgres({
-        version: rds.AuroraPostgresEngineVersion.VER_16_4,
+        version: rds.AuroraPostgresEngineVersion.VER_16_13,
       }),
       vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
@@ -99,7 +130,7 @@ export class DataStack extends Stack {
        */
       parameterGroup: new rds.ParameterGroup(this, 'ClusterParameters', {
         engine: rds.DatabaseClusterEngine.auroraPostgres({
-          version: rds.AuroraPostgresEngineVersion.VER_16_4,
+          version: rds.AuroraPostgresEngineVersion.VER_16_13,
         }),
         description: 'CatalogRail cluster parameters',
         parameters: {
@@ -127,13 +158,13 @@ export class DataStack extends Stack {
       // rather than hold them for a frozen execution environment that may never return.
       idleClientTimeout: Duration.minutes(5),
       borrowTimeout: Duration.seconds(30),
-      dbProxyName: `catalograil-${config.name}`,
+      dbProxyName: `${config.resourcePrefix}-${config.name}`,
     });
 
     // ── KMS ─────────────────────────────────────────────────────────────────────
     /** Rule 3: Razorpay tokens are envelope-encrypted with this key and nothing else. */
     this.tokenKey = new kms.Key(this, 'TokenKey', {
-      alias: `alias/catalograil-${config.name}-tokens`,
+      alias: `alias/${config.resourcePrefix}-${config.name}-tokens`,
       description: 'Envelope encryption for merchant Razorpay OAuth tokens',
       enableKeyRotation: true,
       removalPolicy: retain ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
@@ -141,7 +172,7 @@ export class DataStack extends Stack {
 
     // ── S3 ──────────────────────────────────────────────────────────────────────
     this.uploadsBucket = new s3.Bucket(this, 'Uploads', {
-      bucketName: `catalograil-${config.name}-uploads-${this.account}`,
+      bucketName: `${config.resourcePrefix}-${config.name}-uploads-${this.account}`,
       // Reached only through a presigned PUT scoped to the merchant's own prefix (T1.11).
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
@@ -179,7 +210,7 @@ export class DataStack extends Stack {
     );
 
     this.productImagesBucket = new s3.Bucket(this, 'ProductImages', {
-      bucketName: `catalograil-${config.name}-product-images-${this.account}`,
+      bucketName: `${config.resourcePrefix}-${config.name}-product-images-${this.account}`,
       // Public reads come via CloudFront, never straight off the bucket.
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
@@ -189,7 +220,7 @@ export class DataStack extends Stack {
     });
 
     this.exportsBucket = new s3.Bucket(this, 'Exports', {
-      bucketName: `catalograil-${config.name}-exports-${this.account}`,
+      bucketName: `${config.resourcePrefix}-${config.name}-exports-${this.account}`,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
@@ -199,12 +230,12 @@ export class DataStack extends Stack {
     });
 
     // ── DynamoDB (context §7) ───────────────────────────────────────────────────
-    this.table('Sessions', 'sessions', 'pk', 'sk');
-    this.table('IdempotencyKeys', 'idempotency-keys', 'pk', 'sk');
-    this.table('QueryCache', 'query-cache', 'pk', 'sk');
-    this.table('AdapterCache', 'adapter-cache', 'pk', 'sk');
-    this.table('SearchLogs', 'search-logs', 'pk', 'sk');
-    this.table('RateLimits', 'rate-limits', 'pk', 'sk');
+    this.table(config, 'Sessions', 'sessions', 'pk', 'sk');
+    this.table(config, 'IdempotencyKeys', 'idempotency-keys', 'pk', 'sk');
+    this.table(config, 'QueryCache', 'query-cache', 'pk', 'sk');
+    this.table(config, 'AdapterCache', 'adapter-cache', 'pk', 'sk');
+    this.table(config, 'SearchLogs', 'search-logs', 'pk', 'sk');
+    this.table(config, 'RateLimits', 'rate-limits', 'pk', 'sk');
   }
 
   /**
@@ -213,17 +244,26 @@ export class DataStack extends Stack {
    * All six are expiring by design — sessions, idempotency records, caches, logs and rate
    * limit windows — so TTL is applied here rather than per table, and forgetting it on a
    * new table is not possible.
+   *
+   * Takes the stack's own EnvConfig rather than re-reading `env` off the construct tree, as
+   * the previous version did. That worked only because the context key and the prop
+   * happened to agree, and it silently ignored resourcePrefix.
    */
-  private table(id: string, suffix: string, partitionKey: string, sortKey: string): void {
-    const config = (this.node.tryGetContext('env') as string | undefined) ?? 'dev';
+  private table(
+    config: EnvConfig,
+    id: string,
+    suffix: string,
+    partitionKey: string,
+    sortKey: string,
+  ): void {
     const table = new dynamodb.Table(this, id, {
-      tableName: `catalograil-${config}-${suffix}`,
+      tableName: `${config.resourcePrefix}-${config.name}-${suffix}`,
       partitionKey: { name: partitionKey, type: dynamodb.AttributeType.STRING },
       sortKey: { name: sortKey, type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: 'ttl',
-      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: config === 'prod' },
-      removalPolicy: config === 'prod' ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: config.name === 'prod' },
+      removalPolicy: config.name === 'prod' ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY,
     });
     this.tables[id] = table;
   }

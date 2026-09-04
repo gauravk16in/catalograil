@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 import { App } from 'aws-cdk-lib';
 import { resolveEnv, stackName } from '../lib/env.js';
+import { ApiStack } from '../stacks/api-stack.js';
 import { DataStack } from '../stacks/data-stack.js';
+import { FrontendStack } from '../stacks/frontend-stack.js';
 import { NetworkStack } from '../stacks/network-stack.js';
 import { QueueStack } from '../stacks/queue-stack.js';
+import { WorkerStack } from '../stacks/worker-stack.js';
 
 /**
  * CDK entrypoint.
@@ -29,12 +32,67 @@ const queues = new QueueStack(app, stackName('Queue', config), {
   ...(process.env.OPS_ALARM_EMAIL ? { alarmEmail: process.env.OPS_ALARM_EMAIL } : {}),
 });
 
-new DataStack(app, stackName('Data', config), {
+const data = new DataStack(app, stackName('Data', config), {
   env,
   config,
   vpc: network.vpc,
   lambdaSecurityGroup: network.lambdaSecurityGroup,
   ingestionQueueArn: queues.queues.ingestion.queueArn,
 });
+
+const sesFromAddress = process.env.SES_FROM_ADDRESS ?? 'no-reply@catalograil.example';
+
+/**
+ * The Anthropic key for enrichment, held in Secrets Manager rather than as a Lambda
+ * environment variable — an environment variable is readable by anyone who can describe
+ * the function. Optional, so the stack deploys before the key exists; enrichment then
+ * fails loudly on the missing key rather than the stack failing to deploy at all.
+ */
+const anthropicSecretName = process.env.ANTHROPIC_API_KEY_SECRET_NAME;
+
+new WorkerStack(app, stackName('Worker', config), {
+  env,
+  config,
+  vpc: network.vpc,
+  lambdaSecurityGroup: network.lambdaSecurityGroup,
+  migrationSecurityGroup: data.migrationSecurityGroup,
+  proxy: data.proxy,
+  cluster: data.cluster,
+  queues: queues.queues,
+  uploadsBucket: data.uploadsBucket,
+  exportsBucket: data.exportsBucket,
+  sesFromAddress,
+  ...(anthropicSecretName ? { anthropicApiKeySecretName: anthropicSecretName } : {}),
+});
+
+const api = new ApiStack(app, stackName('Api', config), {
+  env,
+  config,
+  vpc: network.vpc,
+  lambdaSecurityGroup: network.lambdaSecurityGroup,
+  proxy: data.proxy,
+  uploadsBucket: data.uploadsBucket,
+  queryCacheTable: data.tables.QueryCache!,
+  searchLogsTable: data.tables.SearchLogs!,
+});
+
+/**
+ * Only created when a GitHub token secret is named. The dashboards are Git-connected, and
+ * a stack that cannot reach the repository would fail at deploy rather than at synth —
+ * making it opt-in keeps `cdk synth` working for everyone, including CI with no token.
+ */
+const githubTokenSecretName = process.env.GITHUB_TOKEN_SECRET_NAME;
+const githubRepository = process.env.GITHUB_REPOSITORY ?? 'gauravk16in/catalograil';
+
+if (githubTokenSecretName) {
+  new FrontendStack(app, stackName('Frontend', config), {
+    env,
+    config,
+    apiBaseUrl: api.api.apiEndpoint,
+    repository: githubRepository,
+    githubTokenSecretName,
+    ...(process.env.GITHUB_BRANCH ? { branch: process.env.GITHUB_BRANCH } : {}),
+  });
+}
 
 app.synth();

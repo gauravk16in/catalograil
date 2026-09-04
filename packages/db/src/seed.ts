@@ -16,7 +16,7 @@
  */
 import { rupeeStringToPaise } from '@catalograil/core';
 import { sql } from 'drizzle-orm';
-import { drizzle } from 'drizzle-orm/postgres-js';
+import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import {
   categories,
@@ -28,15 +28,6 @@ import {
   productVariants,
   products,
 } from './schema/index.js';
-
-const url = process.env.DATABASE_URL;
-if (!url) {
-  console.error('DATABASE_URL is required.');
-  process.exit(1);
-}
-
-const client = postgres(url, { max: 1, onnotice: () => {} });
-const db = drizzle(client);
 
 // Fixed IDs keep the seed idempotent and make test fixtures quotable.
 const MERCHANT_ELECTRONICS = '11111111-1111-4111-8111-111111111111';
@@ -1062,7 +1053,7 @@ const APPAREL: VariantSeed[] = [
   },
 ];
 
-async function seed(): Promise<void> {
+export async function seed(db: PostgresJsDatabase): Promise<void> {
   console.log('Seeding…');
 
   await db
@@ -1407,8 +1398,28 @@ function stockFor(sku: string): number {
   return n < 12 ? 0 : n; // roughly one variant in eight is out of stock
 }
 
-try {
-  await seed();
-} finally {
-  await client.end();
+/**
+ * CLI entry point. `seed()` itself takes a `db` rather than opening its own connection, so
+ * the migration Lambda can call the exact same function against a deployed database — the
+ * connection it uses is different (direct to the cluster, not this URL), but the rows it
+ * writes must not be a second implementation that can drift from this one.
+ */
+async function main(): Promise<void> {
+  const url = process.env.DATABASE_URL;
+  if (!url) {
+    console.error('DATABASE_URL is required.');
+    process.exit(1);
+  }
+
+  const client = postgres(url, { max: 1, onnotice: () => {} });
+  try {
+    await seed(drizzle(client));
+  } finally {
+    await client.end();
+  }
+}
+
+// Only run when invoked directly, not when imported by the migration Lambda.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  await main();
 }

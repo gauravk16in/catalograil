@@ -115,14 +115,14 @@ export class QueueStack extends Stack {
     const id = toPascalCase(name);
 
     const deadLetterQueue = new sqs.Queue(this, `${id}Dlq`, {
-      queueName: `catalograil-${config.name}-${name}-dlq`,
+      queueName: `${config.resourcePrefix}-${config.name}-${name}-dlq`,
       // Long enough that a poisoned message survives a weekend before anyone looks at it.
       retentionPeriod: Duration.days(14),
       enforceSSL: true,
     });
 
     const queue = new sqs.Queue(this, `${id}Queue`, {
-      queueName: `catalograil-${config.name}-${name}`,
+      queueName: `${config.resourcePrefix}-${config.name}-${name}`,
       visibilityTimeout: spec.visibilityTimeout,
       retentionPeriod: Duration.days(4),
       enforceSSL: true,
@@ -139,7 +139,7 @@ export class QueueStack extends Stack {
      * forever, which reads the same as broken.
      */
     const alarm = new cloudwatch.Alarm(this, `${id}DlqAlarm`, {
-      alarmName: `catalograil-${config.name}-${name}-dlq-not-empty`,
+      alarmName: `${config.resourcePrefix}-${config.name}-${name}-dlq-not-empty`,
       alarmDescription: `Messages in the ${name} dead-letter queue (${spec.description}).`,
       metric: deadLetterQueue.metricApproximateNumberOfMessagesVisible({
         period: Duration.minutes(1),

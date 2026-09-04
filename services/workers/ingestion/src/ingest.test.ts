@@ -5,7 +5,7 @@ import { and, eq } from 'drizzle-orm';
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { InMemoryMailer, InMemoryObjectStore, InMemoryQueue } from './adapters/memory.js';
+import { InMemoryMailer, InMemoryObjectStore, InMemoryQueue } from '@catalograil/aws';
 import { runIngestion, type IngestionDeps } from './ingest.js';
 
 /**
@@ -150,7 +150,6 @@ describe.skipIf(!DATABASE_URL)('ingestion worker', () => {
     expect(outcome.variantsUpserted).toBe(500);
     expect(elapsedMs).toBeLessThan(60_000);
 
-    // eslint-disable-next-line no-console
     console.log(`    500 rows imported in ${(elapsedMs / 1000).toFixed(2)}s`);
   }, 120_000);
 

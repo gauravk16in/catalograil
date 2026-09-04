@@ -94,3 +94,52 @@ export interface EmbeddingMessage {
   readonly merchantId: string;
   readonly reason: 'ingested' | 'enriched' | 'edited';
 }
+
+// ─── Search-path ports (T1.19, T1.20) ─────────────────────────────────────────────
+
+/**
+ * Caches a query's embedding by hash, so a repeated question does not pay Bedrock twice.
+ *
+ * Deliberately not the same interface as the image cache in `@catalograil/embeddings`:
+ * that one caches by URL and tolerates a negative result, this one is keyed by the hash of
+ * the query text and never stores a miss.
+ */
+export interface QueryEmbeddingCache {
+  get(queryHash: string): Promise<number[] | undefined>;
+  set(queryHash: string, vector: readonly number[]): Promise<void>;
+}
+
+/** Per-stage timings, so a slow search can be attributed rather than guessed at. */
+export interface SearchStageLatencies {
+  readonly embedMs: number;
+  readonly queryMs: number;
+  readonly rerankMs: number;
+  readonly hydrateMs: number;
+  readonly totalMs: number;
+}
+
+export interface SearchLogEntry {
+  readonly searchId: string;
+  readonly at: Date;
+  readonly query?: string;
+  readonly hasImage: boolean;
+  readonly filters: Record<string, unknown>;
+  /** Whether the query embedding came from cache. The cost signal worth watching. */
+  readonly embeddingCacheHit: boolean;
+  /** Unit ids in the order returned, so ranking can be replayed and scored later. */
+  readonly resultIds: string[];
+  readonly resultCount: number;
+  readonly noResultsReason?: string;
+  readonly latencies: SearchStageLatencies;
+  readonly source: string;
+  readonly sessionId?: string;
+}
+
+/**
+ * T1.20. Every search is written here — this is both the only debugging tool for ranking
+ * and the training set for the learned re-ranker in T4.3, so a search that is not logged
+ * is a search that cannot be improved on later.
+ */
+export interface SearchLogger {
+  log(entry: SearchLogEntry): Promise<void>;
+}

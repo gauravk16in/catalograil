@@ -16,3 +16,4 @@ playwright-report/
 test-results/
 drizzle/meta/_journal.json.bak
 .drizzle/
+.scratch/
