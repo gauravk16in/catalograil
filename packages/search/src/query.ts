@@ -356,6 +356,24 @@ export async function hybridSearch(
      */
     await tx.unsafe(`SET LOCAL enable_seqscan = off`);
 
+    /**
+     * The alternative `enable_seqscan = off` does not remove.
+     *
+     * Turning off sequential scans penalises the serial path but leaves a *parallel*
+     * sequential scan available, and with accurate statistics the planner costs a
+     * `Gather Merge` over two workers below an HNSW scan — so it reads the whole table
+     * anyway and the index sits unused. This surfaced the moment `ANALYZE` refreshed
+     * stale statistics on a 46k-row table: the plan flipped from an index scan to a
+     * parallel one with no code change, which means the index was only being used by
+     * accident of out-of-date stats.
+     *
+     * Parallelism is worth nothing to this query regardless. An HNSW scan returns after
+     * examining a small fraction of the graph, so there is no large scan to divide, and
+     * the workers exist only to make the option the planner should not be choosing look
+     * cheap. Scoped to the transaction, so nothing else on the connection is affected.
+     */
+    await tx.unsafe(`SET LOCAL max_parallel_workers_per_gather = 0`);
+
     return tx.unsafe(text, binder.values as never[]);
   });
 

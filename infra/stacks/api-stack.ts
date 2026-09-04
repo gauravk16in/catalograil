@@ -8,6 +8,7 @@ import type * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import type * as rds from 'aws-cdk-lib/aws-rds';
 import type * as s3 from 'aws-cdk-lib/aws-s3';
+import type * as sqs from 'aws-cdk-lib/aws-sqs';
 import type { Construct } from 'constructs';
 import type { EnvConfig } from '../lib/env.js';
 import { createFunction, databaseEnvironment } from '../lib/lambda.js';
@@ -23,6 +24,8 @@ export interface ApiStackProps extends StackProps {
   /** DynamoDB tables the search path uses (T1.19, T1.20). */
   readonly queryCacheTable: dynamodb.ITable;
   readonly searchLogsTable: dynamodb.ITable;
+  /** Product writes enqueue enrichment; `/health/deep` also probes it. */
+  readonly enrichmentQueue: sqs.IQueue;
 }
 
 /**
@@ -53,25 +56,66 @@ export class ApiStack extends Stack {
       environment: {
         ...databaseEnvironment(proxy.endpoint),
         S3_BUCKET_UPLOADS: props.uploadsBucket.bucketName,
+        // Product create and update enqueue enrichment (T1.12).
+        SQS_QUEUE_ENRICHMENT: props.enrichmentQueue.queueUrl,
+        // Read only by `/health/deep`, which probes each dependency by name.
+        DDB_TABLE_QUERY_CACHE: props.queryCacheTable.tableName,
+        BEDROCK_REGION: this.region,
+        BEDROCK_TEXT_EMBED_MODEL_ID: 'global.cohere.embed-v4:0',
       },
     });
 
     proxy.grantConnect(merchantApi, 'catalograil');
     // Presigning a PUT requires the permission the URL will carry.
     props.uploadsBucket.grantPut(merchantApi);
+    props.enrichmentQueue.grantSendMessages(merchantApi);
+
+    /**
+     * Permissions `/health/deep` needs to probe each dependency.
+     *
+     * Read-only and metadata-only by design: the health check reports reachability, so it
+     * must not be able to change anything it touches. `HeadBucket` and `DescribeTable` are
+     * the cheapest calls that still prove the network path and the IAM grant together.
+     */
+    props.queryCacheTable.grant(merchantApi, 'dynamodb:DescribeTable');
+    merchantApi.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['s3:ListBucket'],
+        resources: [props.uploadsBucket.bucketArn],
+      }),
+    );
+    merchantApi.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['bedrock:InvokeModel'],
+        resources: [
+          'arn:aws:bedrock:*::foundation-model/*',
+          'arn:aws:bedrock:*:*:inference-profile/*',
+        ],
+      }),
+    );
 
     this.api = new apigw.HttpApi(this, 'MerchantHttpApi', {
       apiName: `${config.resourcePrefix}-${config.name}-merchant`,
       description: 'Merchant-facing API',
+      /**
+       * S1.4. Explicit origins, never `*`.
+       *
+       * The wildcard that was here is rejected by every browser on a credentialed request,
+       * so it failed exactly the calls the dashboards make. Origins now come from config
+       * per environment (`-c appOrigins=...`), and `resolveEnv` refuses a `*`.
+       */
       corsPreflight: {
-        allowOrigins: config.name === 'prod' ? ['https://merchant.catalograil.com'] : ['*'],
+        allowOrigins: [...config.appOrigins],
         allowMethods: [
           apigw.CorsHttpMethod.GET,
           apigw.CorsHttpMethod.POST,
           apigw.CorsHttpMethod.PUT,
+          apigw.CorsHttpMethod.PATCH,
+          apigw.CorsHttpMethod.DELETE,
+          apigw.CorsHttpMethod.OPTIONS,
         ],
-        allowHeaders: ['content-type', 'authorization', 'x-merchant-id'],
-        maxAge: Duration.hours(1),
+        allowHeaders: ['content-type', 'authorization', 'x-correlation-id', 'x-merchant-id'],
+        maxAge: Duration.days(1),
       },
     });
 
@@ -119,11 +163,47 @@ export class ApiStack extends Stack {
 
     const integration = new HttpLambdaIntegration('MerchantIntegration', merchantApi);
 
+    /**
+     * Explicit methods, deliberately **not** `ANY` (S1.1, diagnosis cause 1).
+     *
+     * `ANY` matches `OPTIONS` too, so the IAM authorizer ran on the CORS preflight and
+     * answered 403. A browser treats any non-2xx preflight as a CORS failure and never
+     * sends the real request — which is why every dashboard call failed with nothing
+     * useful in the Network tab. Listing the methods leaves `OPTIONS` unrouted, so the
+     * API's own `corsPreflight` handles it unauthenticated, which is what it is for.
+     */
     this.api.addRoutes({
       path: '/merchant/{proxy+}',
-      methods: [apigw.HttpMethod.ANY],
+      methods: [
+        apigw.HttpMethod.GET,
+        apigw.HttpMethod.POST,
+        apigw.HttpMethod.PUT,
+        apigw.HttpMethod.PATCH,
+        apigw.HttpMethod.DELETE,
+      ],
       integration,
       authorizer: new HttpIamAuthorizer(),
+    });
+
+    /**
+     * S1.5 — health, unauthenticated on purpose.
+     *
+     * It reports whether the API and its dependencies are reachable, which is exactly the
+     * question you need answered when auth is the thing that is broken. It returns no
+     * catalogue data, no merchant data and no identifiers, so there is nothing here worth
+     * gating; putting it behind the gate would make it useless for the failure it exists
+     * to diagnose.
+     */
+    this.api.addRoutes({
+      path: '/health',
+      methods: [apigw.HttpMethod.GET],
+      integration,
+    });
+
+    this.api.addRoutes({
+      path: '/health/{proxy+}',
+      methods: [apigw.HttpMethod.GET],
+      integration,
     });
 
     this.api.addRoutes({

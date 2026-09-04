@@ -67,6 +67,7 @@ const api = new ApiStack(app, stackName('Api', config), {
   uploadsBucket: data.uploadsBucket,
   queryCacheTable: data.tables.QueryCache!,
   searchLogsTable: data.tables.SearchLogs!,
+  enrichmentQueue: queues.queues.enrichment,
 });
 
 /**

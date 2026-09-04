@@ -20,9 +20,23 @@ export interface EnvConfig {
   /** Cold starts inside an MCP tool call are unacceptable in prod (T2.1). */
   readonly mcpProvisionedConcurrency: number;
   readonly razorpayLiveMode: boolean;
+  /**
+   * Browser origins allowed to call the API (S1.4).
+   *
+   * Explicit, never `*`. A wildcard is rejected outright by browsers on any credentialed
+   * request, and it is also the wrong answer for an API that will carry merchant sessions.
+   * Localhost is included outside prod so the dashboards can be developed against a
+   * deployed backend without a second CORS configuration to keep in sync.
+   *
+   * Amplify domains are derived from the app id, which is not known until the Frontend
+   * stack exists — and that stack depends on this one. So they are supplied through CDK
+   * context (`-c appOrigins=https://a,https://b`) rather than by a stack reference, which
+   * would be a dependency cycle.
+   */
+  readonly appOrigins: readonly string[];
 }
 
-const CONFIGS: Record<EnvName, Omit<EnvConfig, 'resourcePrefix'>> = {
+const CONFIGS: Record<EnvName, Omit<EnvConfig, 'resourcePrefix' | 'appOrigins'>> = {
   dev: {
     name: 'dev',
     /**
@@ -62,7 +76,38 @@ export function resolveEnv(app: App): EnvConfig {
   }
 
   const explicitPrefix = app.node.tryGetContext('resourcePrefix') as string | undefined;
-  return { ...base, resourcePrefix: explicitPrefix ?? defaultResourcePrefix() };
+
+  const contextOrigins = (app.node.tryGetContext('appOrigins') as string | undefined)
+    ?.split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  const envOrigins = process.env.APP_ORIGINS?.split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  const appOrigins = contextOrigins ?? envOrigins ?? defaultOrigins(base.name);
+  for (const origin of appOrigins) {
+    if (origin === '*') {
+      throw new Error(
+        'appOrigins must never contain "*": a wildcard origin is rejected by browsers on ' +
+          'credentialed requests and is not a valid gate for a session-bearing API.',
+      );
+    }
+  }
+
+  return { ...base, resourcePrefix: explicitPrefix ?? defaultResourcePrefix(), appOrigins };
+}
+
+/**
+ * Localhost only, outside prod.
+ *
+ * Deployed dashboard origins are passed in per environment; a default that guessed at an
+ * Amplify domain would be wrong the moment an app is recreated with a new id, and wrong
+ * silently — CORS failures do not name the origin they rejected.
+ */
+function defaultOrigins(env: EnvName): readonly string[] {
+  if (env === 'prod') return ['https://merchant.catalograil.com', 'https://app.catalograil.com'];
+  return ['http://localhost:3000', 'http://localhost:3001'];
 }
 
 /** `catalograil-<6 hex chars of the account id>`, so two accounts never collide. */

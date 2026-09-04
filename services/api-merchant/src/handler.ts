@@ -4,6 +4,18 @@ import { getDb } from '@catalograil/db';
 import { S3ObjectStore } from '@catalograil/aws';
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { createUpload, getTemplate, type UploadDeps } from './handlers/uploads.js';
+import { deepHealth, shallowHealth } from './handlers/health.js';
+import { getProduct, listIngestionJobs, listProducts } from './handlers/lists.js';
+import { getSession } from './handlers/session.js';
+import {
+  archiveProduct,
+  createProduct,
+  updateProduct,
+  type ProductDeps,
+} from './handlers/products.js';
+import { SqsQueue } from '@catalograil/aws';
+import { getSql } from '@catalograil/db';
+import type { EnrichmentMessage } from '@catalograil/core';
 
 const logger = new Logger({ serviceName: 'api-merchant' });
 
@@ -35,13 +47,44 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   logger.appendKeys({ correlationId });
 
   try {
-    const route = `${event.requestContext.http.method} ${event.rawPath}`;
+    const method = event.requestContext.http.method;
+    // Trailing slashes are normalised away: a route table that treats `/merchant/products`
+    // and `/merchant/products/` as different endpoints produces 404s that look like bugs.
+    const path = event.rawPath.replace(/\/+$/, '') || '/';
+    const route = `${method} ${path}`;
 
-    if (
-      event.requestContext.http.method === 'GET' &&
-      event.rawPath.startsWith('/merchant/uploads/templates/')
-    ) {
-      const name = event.rawPath.split('/').pop() ?? '';
+    // ── Health, unauthenticated (S1.5) ──────────────────────────────────────────
+    // Before anything that needs a merchant, because the whole point is to answer when
+    // identity is what is broken.
+
+    if (method === 'GET' && path === '/health') {
+      return json(200, shallowHealth());
+    }
+
+    if (method === 'GET' && path === '/health/deep') {
+      const health = await deepHealth({
+        sql: getSql(),
+        region: process.env.AWS_REGION ?? 'ap-south-1',
+        ...(process.env.DDB_TABLE_QUERY_CACHE
+          ? { queryCacheTable: process.env.DDB_TABLE_QUERY_CACHE }
+          : {}),
+        ...(process.env.S3_BUCKET_UPLOADS ? { uploadsBucket: process.env.S3_BUCKET_UPLOADS } : {}),
+        ...(process.env.SQS_QUEUE_ENRICHMENT
+          ? { enrichmentQueueUrl: process.env.SQS_QUEUE_ENRICHMENT }
+          : {}),
+        ...(process.env.BEDROCK_TEXT_EMBED_MODEL_ID
+          ? { embeddingModelId: process.env.BEDROCK_TEXT_EMBED_MODEL_ID }
+          : {}),
+      });
+      // 503 when a dependency is down, so an uptime check does not have to parse the body
+      // to know. Degraded stays 200: a resuming Aurora cluster is slow, not broken.
+      return json(health.status === 'down' ? 503 : 200, health);
+    }
+
+    // ── Templates, unauthenticated read of a static asset ───────────────────────
+
+    if (method === 'GET' && path.startsWith('/merchant/uploads/templates/')) {
+      const name = path.split('/').pop() ?? '';
       const template = getTemplate(name);
       return {
         statusCode: 200,
@@ -53,10 +96,54 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       };
     }
 
-    if (event.requestContext.http.method === 'POST' && event.rawPath === '/merchant/uploads') {
+    // ── Merchant-scoped ─────────────────────────────────────────────────────────
+
+    if (method === 'GET' && path === '/merchant/me') {
+      return json(200, await getSession(deps().db, requireMerchantId(event)));
+    }
+
+    if (method === 'GET' && path === '/merchant/products') {
+      const q = event.queryStringParameters ?? {};
+      return json(
+        200,
+        await listProducts(deps().db, requireMerchantId(event), {
+          ...(q.limit ? { limit: Number(q.limit) } : {}),
+          ...(q.offset ? { offset: Number(q.offset) } : {}),
+        }),
+      );
+    }
+
+    if (method === 'POST' && path === '/merchant/products') {
       const merchantId = requireMerchantId(event);
-      const body = event.body ? JSON.parse(event.body) : {};
-      const result = await createUpload(merchantId, body, deps());
+      const result = await createProduct(productDeps(), merchantId, parseBody(event));
+      return json(201, result);
+    }
+
+    const productMatch = /^\/merchant\/products\/([0-9a-fA-F-]{36})$/.exec(path);
+    if (productMatch) {
+      const merchantId = requireMerchantId(event);
+      const productId = productMatch[1]!;
+
+      if (method === 'GET') {
+        const product = await getProduct(deps().db, merchantId, productId);
+        if (!product) throw new AppError('NOT_FOUND', 'No such product.');
+        return json(200, product);
+      }
+      if (method === 'PATCH') {
+        return json(200, await updateProduct(productDeps(), merchantId, productId, parseBody(event)));
+      }
+      if (method === 'DELETE') {
+        return json(200, await archiveProduct(productDeps(), merchantId, productId));
+      }
+    }
+
+    if (method === 'GET' && path === '/merchant/uploads') {
+      return json(200, await listIngestionJobs(deps().db, requireMerchantId(event)));
+    }
+
+    if (method === 'POST' && path === '/merchant/uploads') {
+      const merchantId = requireMerchantId(event);
+      const result = await createUpload(merchantId, parseBody(event), deps());
       return json(201, result);
     }
 
@@ -75,6 +162,39 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   } finally {
     logger.removeKeys(['correlationId']);
   }
+}
+
+function parseBody(event: APIGatewayProxyEventV2): unknown {
+  if (!event.body) return {};
+  const raw = event.isBase64Encoded
+    ? Buffer.from(event.body, 'base64').toString('utf8')
+    : event.body;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    // A malformed body is the client's error, not a 500 — and saying so plainly saves a
+    // round of "the API is down" when a form serialised badly.
+    throw new AppError('VALIDATION_FAILED', 'Request body is not valid JSON.');
+  }
+}
+
+let cachedProductDeps: ProductDeps | undefined;
+
+/**
+ * Product writes need the enrichment queue; reads do not.
+ *
+ * Built separately and lazily so a dashboard that only lists products never constructs an
+ * SQS client, and so a missing queue URL fails the write rather than every request.
+ */
+function productDeps(): ProductDeps {
+  if (!cachedProductDeps) {
+    cachedProductDeps = {
+      db: getDb(),
+      enrichmentQueue: new SqsQueue<EnrichmentMessage>(required('SQS_QUEUE_ENRICHMENT')),
+      clock: systemClock,
+    };
+  }
+  return cachedProductDeps;
 }
 
 function requireMerchantId(event: APIGatewayProxyEventV2): string {

@@ -8,6 +8,20 @@
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
 
+/**
+ * The caller's bearer token, set once at sign-in rather than read from storage per request.
+ *
+ * Kept in memory deliberately: an access token in `localStorage` is readable by any script
+ * that ends up on the page, and the refresh token is what survives a reload. This is the
+ * seam Cognito plugs into — until it does, no token is set and merchant routes stay behind
+ * the gateway's IAM authorization.
+ */
+let authToken: string | null = null;
+
+export function setAuthToken(token: string | null): void {
+  authToken = token;
+}
+
 export interface ApiError {
   readonly code: string;
   readonly message: string;
@@ -28,11 +42,18 @@ export class ApiRequestError extends Error {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
-    // The merchant session is an httpOnly cookie (T1.21), so it rides along rather than
-    // being read and attached by JavaScript that could leak it.
-    credentials: 'include',
+    /**
+     * No `credentials: 'include'`.
+     *
+     * It was here for an httpOnly session cookie that the API never issued — there is no
+     * `Set-Cookie` anywhere in the backend. What it did do was make every request
+     * credentialed, which browsers refuse against the wildcard `Access-Control-Allow-Origin`
+     * the API returned, so it broke the calls it was meant to authenticate. Identity travels
+     * in the Authorization header instead, which needs no cross-site cookie rules at all.
+     */
     headers: {
       ...(init.body ? { 'content-type': 'application/json' } : {}),
+      ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
       ...init.headers,
     },
   });
