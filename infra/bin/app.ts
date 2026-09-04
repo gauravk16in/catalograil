@@ -101,6 +101,10 @@ if (githubTokenSecretName) {
     apiBaseUrl: api.api.apiEndpoint,
     repository: githubRepository,
     githubTokenSecretName,
+    merchantUserPoolId: auth.merchantPool.userPoolId,
+    merchantUserPoolClientId: auth.merchantClient.userPoolClientId,
+    buyerUserPoolId: auth.buyerPool.userPoolId,
+    buyerUserPoolClientId: auth.buyerClient.userPoolClientId,
     ...(process.env.GITHUB_BRANCH ? { branch: process.env.GITHUB_BRANCH } : {}),
   });
 }

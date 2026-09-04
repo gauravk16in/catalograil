@@ -19,6 +19,11 @@ export interface FrontendStackProps extends StackProps {
   readonly githubTokenSecretName: string;
   /** Branch Amplify builds from. */
   readonly branch?: string;
+  /** Cognito, injected at build time — `NEXT_PUBLIC_*` is inlined, not read at runtime. */
+  readonly merchantUserPoolId?: string;
+  readonly merchantUserPoolClientId?: string;
+  readonly buyerUserPoolId?: string;
+  readonly buyerUserPoolClientId?: string;
 }
 
 /**
@@ -66,6 +71,12 @@ export class FrontendStack extends Stack {
       environment: {
         NEXT_PUBLIC_API_BASE_URL: props.apiBaseUrl,
         NEXT_PUBLIC_STAGE: config.name,
+        ...(props.merchantUserPoolId
+          ? { NEXT_PUBLIC_MERCHANT_USER_POOL_ID: props.merchantUserPoolId }
+          : {}),
+        ...(props.merchantUserPoolClientId
+          ? { NEXT_PUBLIC_MERCHANT_USER_POOL_CLIENT_ID: props.merchantUserPoolClientId }
+          : {}),
       },
     });
 
@@ -80,6 +91,10 @@ export class FrontendStack extends Stack {
       environment: {
         NEXT_PUBLIC_API_BASE_URL: props.apiBaseUrl,
         NEXT_PUBLIC_STAGE: config.name,
+        ...(props.buyerUserPoolId ? { NEXT_PUBLIC_BUYER_USER_POOL_ID: props.buyerUserPoolId } : {}),
+        ...(props.buyerUserPoolClientId
+          ? { NEXT_PUBLIC_BUYER_USER_POOL_CLIENT_ID: props.buyerUserPoolClientId }
+          : {}),
       },
     });
 
@@ -201,7 +216,15 @@ export class FrontendStack extends Stack {
                     `cd ${appDirectory}`,
                   ],
                 },
-                build: { commands: ['npx next build'] },
+                /**
+                 * `NODE_ENV=production` explicitly.
+                 *
+                 * A dev NODE_ENV during a `output: 'export'` build fails prerendering the
+                 * 404 with "<Html> should not be imported outside of pages/_document" —
+                 * a message that names nothing relevant and sends you looking through your
+                 * own components for an import that is not there.
+                 */
+                build: { commands: ['NODE_ENV=production npx next build'] },
               },
               artifacts: {
                 // `out`, not `.next`: this is a static export. Relative to appRoot, which

@@ -14,15 +14,27 @@ importers:
       '@aws-sdk/client-bedrock-runtime':
         specifier: ^3.716.0
         version: 3.1125.0
+      '@aws-sdk/client-cognito-identity-provider':
+        specifier: ^3.1126.0
+        version: 3.1126.0
       '@catalograil/config':
         specifier: workspace:*
         version: link:packages/config
+      '@catalograil/db':
+        specifier: workspace:*
+        version: link:packages/db
       '@types/node':
         specifier: ^22.10.2
         version: 22.20.1
+      drizzle-orm:
+        specifier: ^0.38.4
+        version: 0.38.4(@types/react@19.2.18)(pg@8.23.0)(postgres@3.4.9)(react@19.2.8)
       esbuild:
         specifier: ^0.24.2
         version: 0.24.2
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
       prettier:
         specifier: ^3.4.2
         version: 3.9.6
