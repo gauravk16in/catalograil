@@ -6,6 +6,7 @@ import type * as lambda from 'aws-cdk-lib/aws-lambda';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import type * as rds from 'aws-cdk-lib/aws-rds';
 import type * as s3 from 'aws-cdk-lib/aws-s3';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import type * as sqs from 'aws-cdk-lib/aws-sqs';
 import type { Construct } from 'constructs';
 import type { EnvConfig } from '../lib/env.js';
@@ -26,6 +27,8 @@ export interface WorkerStackProps extends StackProps {
   readonly uploadsBucket: s3.IBucket;
   readonly exportsBucket: s3.IBucket;
   readonly sesFromAddress: string;
+  /** Name of a Secrets Manager secret holding the Anthropic API key, when configured. */
+  readonly anthropicApiKeySecretName?: string;
 }
 
 /**
@@ -106,6 +109,46 @@ export class WorkerStack extends Stack {
 
     grantDatabase(proxy, embedding);
     grantBedrock(embedding);
+
+    // ── Enrichment (T1.13) ──────────────────────────────────────────────────────
+    const enrichment = createFunction(this, 'EnrichmentWorker', {
+      config,
+      entry: path.join(REPO_ROOT, 'services/workers/enrichment/src/handler.ts'),
+      vpc,
+      securityGroups: [lambdaSecurityGroup],
+      timeout: Duration.minutes(5),
+      memorySize: 1024,
+      environment: {
+        ...dbEnv,
+        SQS_QUEUE_EMBEDDING: props.queues.embedding.queueUrl,
+        ...(props.anthropicApiKeySecretName
+          ? { ANTHROPIC_API_KEY_SECRET: props.anthropicApiKeySecretName }
+          : {}),
+      },
+    });
+
+    enrichment.addEventSource(
+      new SqsEventSource(props.queues.enrichment, {
+        /**
+         * Twenty, matching ENRICHMENT_BATCH_SIZE: the worker turns one batch into one
+         * Claude call, so the event source's batch size *is* the model batch size. A
+         * smaller number here would quietly multiply the cost of every import.
+         */
+        batchSize: 20,
+        maxBatchingWindow: Duration.seconds(30),
+        reportBatchItemFailures: true,
+      }),
+    );
+
+    grantDatabase(proxy, enrichment);
+    props.queues.embedding.grantSendMessages(enrichment);
+    if (props.anthropicApiKeySecretName) {
+      secretsmanager.Secret.fromSecretNameV2(
+        this,
+        'AnthropicApiKey',
+        props.anthropicApiKeySecretName,
+      ).grantRead(enrichment);
+    }
 
     // ── Migration (operational, not a queue consumer) ───────────────────────────
     /**

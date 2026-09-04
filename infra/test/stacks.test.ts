@@ -58,6 +58,8 @@ function synth(env: 'dev' | 'prod' = 'dev') {
     lambdaSecurityGroup: network.lambdaSecurityGroup,
     proxy: data.proxy,
     uploadsBucket: data.uploadsBucket,
+    queryCacheTable: data.tables.QueryCache!,
+    searchLogsTable: data.tables.SearchLogs!,
   });
 
   return {
@@ -89,7 +91,9 @@ describe('worker stack', () => {
 
   it('reports partial batch failures on every queue consumer', () => {
     const sources = templates.workers.findResources('AWS::Lambda::EventSourceMapping');
-    expect(Object.keys(sources).length).toBe(2);
+    // Count-agnostic on purpose: the invariant is that every consumer reports partial
+    // failures, and pinning a number just means this test breaks each time one is added.
+    expect(Object.keys(sources).length).toBeGreaterThanOrEqual(3);
     for (const source of Object.values(sources)) {
       // Without this one poisoned message takes its whole batch to the DLQ.
       expect(source.Properties?.FunctionResponseTypes).toEqual(['ReportBatchItemFailures']);

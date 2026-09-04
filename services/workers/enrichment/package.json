@@ -32,7 +32,8 @@
     "@types/aws-lambda": "^8.10.147",
     "@anthropic-ai/sdk": "^0.71.0",
     "drizzle-orm": "^0.38.2",
-    "@catalograil/aws": "workspace:*"
+    "@catalograil/aws": "workspace:*",
+    "@aws-sdk/client-secrets-manager": "^3.716.0"
   },
   "devDependencies": {
     "@catalograil/config": "workspace:*",
