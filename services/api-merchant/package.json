@@ -32,7 +32,9 @@
     "@aws-lambda-powertools/logger": "^2.12.0",
     "@aws-lambda-powertools/metrics": "^2.12.0",
     "@aws-lambda-powertools/tracer": "^2.12.0",
-    "@types/aws-lambda": "^8.10.147"
+    "@types/aws-lambda": "^8.10.147",
+    "drizzle-orm": "^0.38.2",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "@catalograil/config": "workspace:*",

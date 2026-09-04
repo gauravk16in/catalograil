@@ -70,6 +70,13 @@ export const products = pgTable(
     brand: text('brand'),
     description: text('description'),
     categoryId: uuid('category_id').references(() => categories.id),
+    /**
+     * The merchant's own free-text category from the CSV (`category_hint`) or the product
+     * form. Kept alongside `category_id` rather than replaced by it: ingestion only
+     * resolves a hint that already matches the taxonomy, and enrichment (T1.13) reads the
+     * unresolved text as a signal when deciding where the product belongs.
+     */
+    categoryHint: text('category_hint'),
     attributes: jsonb('attributes').$type<Record<string, unknown>>().default({}).notNull(),
     useCases: text('use_cases').array(),
     targetAudience: text('target_audience').array(),
