@@ -580,6 +580,9 @@ importers:
       eslint:
         specifier: ^9.17.0
         version: 9.39.5(jiti@1.21.7)(supports-color@7.2.0)
+      postgres:
+        specifier: ^3.4.5
+        version: 3.4.9
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
