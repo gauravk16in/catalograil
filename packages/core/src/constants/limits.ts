@@ -21,7 +21,18 @@ export const SEARCH_FUSION_LIMIT = 30;
 export const SEARCH_RRF_K = 60;
 
 /** Reciprocal-rank-fusion channel weights (T1.17). */
-export const RRF_WEIGHTS = { semantic: 1.0, intent: 0.6, lexical: 0.8 } as const;
+export const RRF_WEIGHTS = { semantic: 1.0, intent: 0.6, lexical: 0.8, visual: 1.0 } as const;
+
+/**
+ * How much the text channels are worth when an image is also given (T2.9).
+ *
+ * A buyer who uploads a photo *and* types has told us two things, and the photo is the more
+ * specific of the two: "this, but in size 42" means the picture defines what, and the words
+ * refine it. Leaving the text channels at full weight lets a strong lexical match on the
+ * word "shirt" outrank items that actually look like the photo — which reads to the buyer as
+ * the image having been ignored.
+ */
+export const TEXT_WEIGHT_WITH_IMAGE = 0.6;
 
 /** Business re-rank weights (T1.18). Must sum to 1. */
 export const RERANK_WEIGHTS = {

@@ -97,6 +97,7 @@ new McpStack(app, stackName('Mcp', config), {
   config,
   apiBaseUrl: api.api.apiEndpoint,
   buyerAppUrl: process.env.BUYER_APP_URL ?? 'https://main.d1ypcvqs4kcq44.amplifyapp.com',
+  rateLimitTable: data.tables.RateLimits!,
 });
 
 /**

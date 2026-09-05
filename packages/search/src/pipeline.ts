@@ -10,7 +10,7 @@ import {
   type SearchResponse,
   type SearchResultItem,
 } from '@catalograil/core';
-import type { Embedder, ImageFetcher } from '@catalograil/embeddings';
+import { embedImageCached, type Embedder, type ImageFetcher } from '@catalograil/embeddings';
 import type { Sql } from 'postgres';
 import { buildNoResultsReason, buildWhyThisMatched } from './explain.js';
 import {
@@ -90,8 +90,24 @@ export async function runSearch(
   let visualVector: number[] | null = null;
   if (request.imageUrl && deps.imageFetcher) {
     const t = performance.now();
-    const image = await deps.imageFetcher.fetch(request.imageUrl);
-    if (image) visualVector = await deps.embedder.embedImage(image);
+    /**
+     * Through the cache, not straight to the model (T2.9).
+     *
+     * An assistant passes the same `image_url` on every turn of a conversation, and each
+     * uncached pass costs an HTTP fetch plus a Bedrock call inside a 200ms budget. The
+     * cache is keyed by both the URL and the bytes, so a re-upload of the same photo under
+     * a fresh signed URL still skips the embedding.
+     */
+    visualVector = deps.queryCache
+      ? await embedImageCached(request.imageUrl, {
+          embedder: deps.embedder,
+          fetcher: deps.imageFetcher,
+          cache: deps.queryCache,
+        })
+      : await (async () => {
+          const image = await deps.imageFetcher!.fetch(request.imageUrl!);
+          return image ? deps.embedder.embedImage(image) : null;
+        })();
     embedMs += performance.now() - t;
   }
 

@@ -105,8 +105,16 @@ export interface EmbeddingMessage {
  * the query text and never stores a miss.
  */
 export interface QueryEmbeddingCache {
-  get(queryHash: string): Promise<number[] | undefined>;
-  set(queryHash: string, vector: readonly number[]): Promise<void>;
+  /**
+   * `undefined` is a miss; `null` is a remembered failure.
+   *
+   * The distinction matters for images (T2.9): a broken image URL in a conversation is
+   * retried on every turn otherwise, and each retry costs the full fetch timeout inside a
+   * 200ms search budget. Remembering that it failed is as useful as remembering that it
+   * worked.
+   */
+  get(queryHash: string): Promise<number[] | null | undefined>;
+  set(queryHash: string, vector: readonly number[] | null): Promise<void>;
 }
 
 /** Per-stage timings, so a slow search can be attributed rather than guessed at. */

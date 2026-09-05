@@ -652,6 +652,9 @@ importers:
       '@aws-sdk/credential-providers':
         specifier: ^3.1126.0
         version: 3.1126.0
+      '@catalograil/aws':
+        specifier: workspace:*
+        version: link:../../packages/aws
       '@catalograil/core':
         specifier: workspace:*
         version: link:../../packages/core

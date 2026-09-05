@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import { CfnOutput, Duration, Stack, type StackProps } from 'aws-cdk-lib';
+import type * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import type * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
@@ -13,6 +14,8 @@ export interface McpStackProps extends StackProps {
   readonly config: EnvConfig;
   readonly apiBaseUrl: string;
   readonly buyerAppUrl: string;
+  /** T2.8's token buckets. */
+  readonly rateLimitTable: dynamodb.ITable;
   readonly vpc?: ec2.IVpc;
 }
 
@@ -47,8 +50,11 @@ export class McpStack extends Stack {
       environment: {
         API_BASE_URL: props.apiBaseUrl,
         BUYER_APP_URL: props.buyerAppUrl,
+        DDB_TABLE_RATE_LIMITS: props.rateLimitTable.tableName,
       },
     });
+
+    props.rateLimitTable.grantReadWriteData(mcp);
 
     /**
      * Signs its own calls to `/internal/*`, which is IAM-authorized.

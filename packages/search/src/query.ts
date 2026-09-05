@@ -6,6 +6,7 @@ import {
   SEARCH_CANDIDATE_LIMIT,
   FLOOR_OVERFETCH,
   SEARCH_FUSION_LIMIT,
+  TEXT_WEIGHT_WITH_IMAGE,
   SEARCH_RRF_K,
   AppError,
 } from '@catalograil/core';
@@ -155,20 +156,30 @@ function buildChannels(
     });
   };
 
+  /**
+   * When a photo is present the text channels are worth less (T2.9).
+   *
+   * A buyer who uploads an image *and* types has told us two things, and the image is the
+   * more specific: "this, but in cotton" means the picture defines what and the words
+   * refine it. At equal weight a strong lexical hit on "shirt" outranks the items that
+   * actually look like the photo, which reads as the image having been ignored.
+   */
+  const textScale = input.visualLiteral ? TEXT_WEIGHT_WITH_IMAGE : 1;
+
   if (input.queryLiteral) {
-    vectorChannel('semantic', 'v_semantic', input.queryLiteral, RRF_WEIGHTS.semantic);
-    vectorChannel('intent', 'v_intent', input.queryLiteral, RRF_WEIGHTS.intent);
+    vectorChannel('semantic', 'v_semantic', input.queryLiteral, RRF_WEIGHTS.semantic * textScale);
+    vectorChannel('intent', 'v_intent', input.queryLiteral, RRF_WEIGHTS.intent * textScale);
   }
 
   if (input.visualLiteral) {
-    vectorChannel('visual', 'v_visual', input.visualLiteral, RRF_WEIGHTS.semantic);
+    vectorChannel('visual', 'v_visual', input.visualLiteral, RRF_WEIGHTS.visual);
   }
 
   if (input.queryText) {
     const p = binder.bind(input.queryText);
     channels.push({
       name: 'lexical',
-      weight: RRF_WEIGHTS.lexical,
+      weight: RRF_WEIGHTS.lexical * textScale,
       sql: `
         SELECT id,
                RANK() OVER (ORDER BY ts_rank_cd(tsv, websearch_to_tsquery('english', ${p})) DESC) AS r,

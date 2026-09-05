@@ -3,6 +3,7 @@ import { SignatureV4 } from '@smithy/signature-v4';
 import { Sha256 } from '@aws-crypto/sha256-js';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
+import { DynamoRateLimiter, failOpen, type RateLimiter } from '@catalograil/aws';
 import { HttpCatalog } from './catalog.js';
 import { buildServer } from './server.js';
 import { SERVER_DESCRIPTION } from './tools.js';
@@ -39,6 +40,37 @@ async function signedFetch(url: string, init: RequestInit): Promise<Response> {
     body: init.body as string,
   });
   return fetch(url, { ...init, headers: signed.headers as Record<string, string> });
+}
+
+let cachedLimiter: RateLimiter | undefined;
+
+/**
+ * Wrapped in `failOpen`, so a DynamoDB problem degrades abuse protection rather than
+ * taking the tools down. Refusing every call because we cannot count them punishes every
+ * honest caller for a problem none of them caused.
+ */
+function limiter(): RateLimiter {
+  if (!cachedLimiter) {
+    cachedLimiter = failOpen(new DynamoRateLimiter(required('DDB_TABLE_RATE_LIMITS')), (err) =>
+      // Loudly, because failing open silently means protection can be off for weeks with
+      // every dashboard green and the only symptom a bill.
+      logger.error('Rate limiter unavailable — allowing the request', {
+        errorMessage: err instanceof Error ? err.message : String(err),
+      }),
+    );
+  }
+  return cachedLimiter;
+}
+
+/**
+ * Who to count against.
+ *
+ * The MCP transport carries no session of ours, so the source IP is what there is. It is
+ * imperfect — a whole office behind one NAT shares a bucket — which is why the limits are
+ * generous enough that a human never reaches them and a script does immediately.
+ */
+function subjectFor(event: APIGatewayProxyEventV2): string {
+  return event.requestContext.http.sourceIp || 'unknown';
 }
 
 function catalog(): HttpCatalog {
@@ -84,6 +116,42 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
     if (!body || body.jsonrpc !== '2.0') {
       return json(400, rpcError(body?.id ?? null, -32600, 'Not a JSON-RPC 2.0 request.'));
+    }
+
+    /**
+     * Throttled before the tool runs, not after.
+     *
+     * `create_checkout` is limited far more tightly than searching because it creates a
+     * session and reserves nothing yet — but a script that can make ten thousand of them
+     * fills the table and the queue behind it.
+     */
+    if (body.method === 'tools/call') {
+      const toolName = (body.params as { name?: string } | undefined)?.name ?? '';
+      const action = toolName === 'create_checkout' ? 'checkout' : 'search';
+      const decision = await limiter().consume(subjectFor(event), action);
+
+      if (!decision.allowed) {
+        logger.info('Throttled', { action, subject: subjectFor(event) });
+        return json(200, {
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            content: [
+              {
+                type: 'text',
+                // A structured, quotable sentence rather than a bare code: the model has to
+                // tell the buyer something, and given only a 429 it will invent a reason.
+                text: JSON.stringify({
+                  error: 'rate_limited',
+                  retry_after_seconds: decision.retryAfterSeconds,
+                  message: `Too many requests. Try again in ${decision.retryAfterSeconds} seconds.`,
+                }),
+              },
+            ],
+            isError: true,
+          },
+        });
+      }
     }
 
     const result = await dispatch(body);
