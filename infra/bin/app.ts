@@ -82,6 +82,7 @@ const auth = new AuthStack(app, stackName('Auth', config), {
   config,
   merchantPostConfirmation: workers.merchantPostConfirmation,
   buyerPostConfirmation: workers.buyerPostConfirmation,
+  buyerAppUrl: envOr('BUYER_APP_URL', 'https://main.d1ypcvqs4kcq44.amplifyapp.com'),
 });
 
 const api = new ApiStack(app, stackName('Api', config), {
@@ -109,12 +110,15 @@ const api = new ApiStack(app, stackName('Api', config), {
  * The MCP server (T2.1). Depends only on the API's URL, so it deploys after the API and
  * before nothing.
  */
-new McpStack(app, stackName('Mcp', config), {
+const mcp = new McpStack(app, stackName('Mcp', config), {
   env,
   config,
   apiBaseUrl: api.api.apiEndpoint,
   buyerAppUrl: envOr('BUYER_APP_URL', 'https://main.d1ypcvqs4kcq44.amplifyapp.com'),
   rateLimitTable: data.tables.RateLimits!,
+  cognitoIssuer: `https://cognito-idp.${config.name === 'prod' ? 'ap-south-1' : 'ap-south-1'}.amazonaws.com/${auth.buyerPool.userPoolId}`,
+  mcpClientId: auth.mcpClient.userPoolClientId,
+  hostedUiDomain: auth.buyerDomain.baseUrl(),
 });
 
 /**
@@ -136,6 +140,7 @@ if (githubTokenSecretName) {
     merchantUserPoolClientId: auth.merchantClient.userPoolClientId,
     buyerUserPoolId: auth.buyerPool.userPoolId,
     buyerUserPoolClientId: auth.buyerClient.userPoolClientId,
+    mcpUrl: mcp.functionUrl.url,
     ...(process.env.GITHUB_BRANCH ? { branch: process.env.GITHUB_BRANCH } : {}),
   });
 }

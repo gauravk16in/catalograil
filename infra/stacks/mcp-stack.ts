@@ -16,6 +16,10 @@ export interface McpStackProps extends StackProps {
   readonly buyerAppUrl: string;
   /** T2.8's token buckets. */
   readonly rateLimitTable: dynamodb.ITable;
+  /** Cognito buyer pool, which is the authorization server for T2.7. */
+  readonly cognitoIssuer: string;
+  readonly mcpClientId: string;
+  readonly hostedUiDomain: string;
   readonly vpc?: ec2.IVpc;
 }
 
@@ -51,6 +55,9 @@ export class McpStack extends Stack {
         API_BASE_URL: props.apiBaseUrl,
         BUYER_APP_URL: props.buyerAppUrl,
         DDB_TABLE_RATE_LIMITS: props.rateLimitTable.tableName,
+        COGNITO_ISSUER: props.cognitoIssuer,
+        COGNITO_MCP_CLIENT_ID: props.mcpClientId,
+        COGNITO_HOSTED_UI: props.hostedUiDomain,
       },
     });
 

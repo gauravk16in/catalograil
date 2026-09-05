@@ -14,6 +14,8 @@ export interface AuthStackProps extends StackProps {
   readonly merchantPostConfirmation?: lambda.IFunction;
   readonly buyerPostConfirmation?: lambda.IFunction;
   readonly vpc?: ec2.IVpc;
+  /** Used for the OAuth callback and logout URLs. */
+  readonly buyerAppUrl?: string;
 }
 
 /**
@@ -36,6 +38,9 @@ export class AuthStack extends Stack {
   readonly buyerPool: cognito.UserPool;
   readonly merchantClient: cognito.UserPoolClient;
   readonly buyerClient: cognito.UserPoolClient;
+  /** The client Claude and ChatGPT use, via OAuth 2.1 + PKCE (T2.7). */
+  readonly mcpClient: cognito.UserPoolClient;
+  readonly buyerDomain: cognito.UserPoolDomain;
 
   constructor(scope: Construct, id: string, props: AuthStackProps) {
     super(scope, id, props);
@@ -150,6 +155,106 @@ export class AuthStack extends Stack {
       enableTokenRevocation: true,
       preventUserExistenceErrors: true,
     });
+
+    /**
+     * T2.7 — letting an assistant act for a buyer, through Cognito rather than around it.
+     *
+     * Cognito is already an OAuth 2.1 authorization server with PKCE, a hosted login page
+     * and a discovery document. Writing our own would mean owning token issuance, refresh,
+     * revocation and consent for a flow whose entire security rests on getting those right —
+     * so the MCP server delegates, and only ever validates.
+     *
+     * The scopes are deliberately narrow and separately grantable. A buyer connecting their
+     * assistant is agreeing to let it spend their money, and "read your addresses" and
+     * "place orders as you" should not be one undifferentiated yes.
+     */
+    const resourceServer = this.buyerPool.addResourceServer('McpResourceServer', {
+      identifier: 'catalograil',
+      userPoolResourceServerName: 'Conciergent MCP',
+      scopes: [
+        new cognito.ResourceServerScope({
+          scopeName: 'addresses.read',
+          scopeDescription: 'See your saved delivery addresses',
+        }),
+        new cognito.ResourceServerScope({
+          scopeName: 'orders.read',
+          scopeDescription: 'See your orders and their status',
+        }),
+        new cognito.ResourceServerScope({
+          scopeName: 'orders.write',
+          scopeDescription: 'Place orders on your behalf',
+        }),
+      ],
+    });
+
+    /**
+     * The hosted login page an assistant redirects a buyer to.
+     *
+     * A Cognito-prefixed domain rather than a custom one: a custom domain needs an ACM
+     * certificate in us-east-1 and a DNS record, and neither adds security here — what the
+     * buyer needs to recognise is the Conciergent branding on the page, which the hosted UI
+     * carries either way.
+     */
+    this.buyerDomain = this.buyerPool.addDomain('BuyerDomain', {
+      cognitoDomain: { domainPrefix: `${config.resourcePrefix}-${config.name}-buyers` },
+    });
+
+    this.mcpClient = this.buyerPool.addClient('McpClient', {
+      userPoolClientName: `${config.resourcePrefix}-${config.name}-mcp`,
+      /**
+       * No secret. Claude and ChatGPT are public clients — they run on someone else's
+       * machine and cannot keep one — which is exactly the case PKCE exists for.
+       */
+      generateSecret: false,
+      oAuth: {
+        flows: { authorizationCodeGrant: true, implicitCodeGrant: false },
+        scopes: [
+          cognito.OAuthScope.OPENID,
+          cognito.OAuthScope.EMAIL,
+          cognito.OAuthScope.resourceServer(resourceServer, new cognito.ResourceServerScope({
+            scopeName: 'addresses.read',
+            scopeDescription: 'See your saved delivery addresses',
+          })),
+          cognito.OAuthScope.resourceServer(resourceServer, new cognito.ResourceServerScope({
+            scopeName: 'orders.read',
+            scopeDescription: 'See your orders and their status',
+          })),
+          cognito.OAuthScope.resourceServer(resourceServer, new cognito.ResourceServerScope({
+            scopeName: 'orders.write',
+            scopeDescription: 'Place orders on your behalf',
+          })),
+        ],
+        /**
+         * Both assistants' callback URLs.
+         *
+         * Registered explicitly rather than by wildcard: a redirect URI is the one place an
+         * authorization code can be sent, and a loose entry here is how a code ends up
+         * somewhere it should not.
+         */
+        callbackUrls: [
+          'https://claude.ai/api/mcp/auth_callback',
+          'https://claude.com/api/mcp/auth_callback',
+          'https://chatgpt.com/connector_platform_oauth_redirect',
+          'https://chat.openai.com/aip/oauth/callback',
+          ...(props.buyerAppUrl ? [`${props.buyerAppUrl.replace(/\/$/, '')}/connected`] : []),
+        ],
+        logoutUrls: props.buyerAppUrl ? [props.buyerAppUrl] : [],
+      },
+      authFlows: { userSrp: true },
+      accessTokenValidity: Duration.hours(1),
+      idTokenValidity: Duration.hours(1),
+      // Thirty days, so a buyer does not have to reconnect their assistant every week —
+      // and revocable, so disconnecting actually disconnects.
+      refreshTokenValidity: Duration.days(30),
+      enableTokenRevocation: true,
+      preventUserExistenceErrors: true,
+    });
+
+    new CfnOutput(this, 'BuyerHostedUiDomain', {
+      value: this.buyerDomain.baseUrl(),
+      description: 'Where buyers sign in when connecting an assistant',
+    });
+    new CfnOutput(this, 'McpClientId', { value: this.mcpClient.userPoolClientId });
 
     // ── Outputs the dashboards need at build time ──────────────────────────────
 

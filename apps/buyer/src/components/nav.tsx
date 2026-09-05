@@ -16,6 +16,7 @@ export function Nav() {
 
   const links = [
     { href: '/', label: 'Search' },
+    { href: '/connect', label: 'Use in Claude' },
     { href: '/orders', label: 'Orders' },
     { href: '/account', label: 'Account' },
   ];

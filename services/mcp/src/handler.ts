@@ -5,7 +5,16 @@ import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoRateLimiter, failOpen, type RateLimiter } from '@catalograil/aws';
 import { HttpCatalog } from './catalog.js';
-import { buildServer } from './server.js';
+import { buildServer, type AuthContext } from './server.js';
+import {
+  TokenVerifier,
+  authorizationServerMetadata,
+  connectRequired,
+  protectedResourceMetadata,
+  requireScope,
+  type OAuthConfig,
+  type VerifiedCaller,
+} from './oauth.js';
 import { SERVER_DESCRIPTION } from './tools.js';
 
 const logger = new Logger({ serviceName: 'mcp' });
@@ -73,6 +82,34 @@ function subjectFor(event: APIGatewayProxyEventV2): string {
   return event.requestContext.http.sourceIp || 'unknown';
 }
 
+let cachedVerifier: TokenVerifier | undefined;
+
+/**
+ * The server's own public URL, taken from the request rather than configured.
+ *
+ * The OAuth metadata has to advertise this endpoint as the protected resource, and a Lambda
+ * cannot be told its own Function URL at deploy time — referencing it in the function's own
+ * environment is a CloudFormation circular dependency, which is exactly what happened when
+ * this was config. Reading the Host header is also simply more correct: it stays right if
+ * the URL ever changes, and behind a custom domain later it reports the name the buyer
+ * actually used.
+ */
+function oauth(event: APIGatewayProxyEventV2): {
+  config: OAuthConfig;
+  verifier: TokenVerifier;
+} {
+  const host = event.headers.host ?? event.headers.Host ?? '';
+  const config: OAuthConfig = {
+    issuer: required('COGNITO_ISSUER'),
+    clientId: required('COGNITO_MCP_CLIENT_ID'),
+    hostedUiDomain: required('COGNITO_HOSTED_UI'),
+    resourceUrl: `https://${host}`,
+  };
+  // Only the verifier is cached: it holds the fetched JWKS, which is the expensive part.
+  if (!cachedVerifier) cachedVerifier = new TokenVerifier(config);
+  return { config, verifier: cachedVerifier };
+}
+
 function catalog(): HttpCatalog {
   return new HttpCatalog({
     apiBaseUrl: required('API_BASE_URL'),
@@ -95,6 +132,24 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
   try {
     const method = event.requestContext.http.method;
+
+    /**
+     * The discovery documents an assistant reads to start the OAuth flow (T2.7).
+     *
+     * Served from the MCP endpoint itself because that URL is the only one the buyer pasted
+     * — everything else has to be reachable from it in one hop.
+     */
+    const path = event.rawPath.replace(/\/+$/, '');
+    if (method === 'GET' && path.endsWith('/.well-known/oauth-protected-resource')) {
+      return json(200, protectedResourceMetadata(oauth(event).config));
+    }
+    if (
+      method === 'GET' &&
+      (path.endsWith('/.well-known/oauth-authorization-server') ||
+        path.endsWith('/.well-known/openid-configuration'))
+    ) {
+      return json(200, authorizationServerMetadata(oauth(event).config));
+    }
 
     // A GET is how a connector probes for liveness before it will attempt a session.
     if (method === 'GET') {
@@ -154,7 +209,31 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       }
     }
 
-    const result = await dispatch(body);
+    /**
+     * The buyer's token, verified once per request and shared with the tools that need it.
+     *
+     * Verification is lazy: the read-only tools work without any account at all, and making
+     * every anonymous search pay a JWKS fetch and a signature check would be a real cost for
+     * a check most calls do not need.
+     */
+    let verified: VerifiedCaller | null | undefined;
+    const authorization = event.headers.authorization ?? event.headers.Authorization;
+
+    const authContext: AuthContext = {
+      token: () => (authorization?.startsWith('Bearer ') ? authorization.slice(7).trim() : null),
+      requireScope: (scope) => {
+        if (!verified) throw new Error('Token was not verified.');
+        requireScope(verified, scope);
+      },
+    };
+
+    if (authorization && body.method === 'tools/call') {
+      // A malformed or expired token is an error the buyer can act on, not a silent
+      // downgrade to anonymous — which would look like the assistant forgetting them.
+      verified = await oauth(event).verifier.verify(authorization);
+    }
+
+    const result = await dispatch(body, authContext);
     // A notification has no id and expects no reply; returning one is a protocol error.
     if (result === undefined) return { statusCode: 202, body: '' };
     return json(200, { jsonrpc: '2.0', id: body.id, result });
@@ -169,6 +248,33 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
      * with an opaque body it handles by inventing an explanation, which is the failure mode
      * the whole hallucination audit exists to prevent.
      */
+    /**
+     * An unauthenticated tool call gets the "connect your account" payload, not a bare error.
+     *
+     * The MCP spec's 401 with `WWW-Authenticate` is what lets a connector start the flow
+     * automatically; the structured tool result is what lets the model explain it to the
+     * buyer if the connector does not.
+     */
+    if ((err as { code?: string }).code === 'UNAUTHENTICATED') {
+      return {
+        statusCode: 401,
+        headers: {
+          'content-type': 'application/json',
+          'www-authenticate': `Bearer resource_metadata="${publicUrl(event)}/.well-known/oauth-protected-resource"`,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: null,
+          result: {
+            content: [
+              { type: 'text', text: JSON.stringify(connectRequired(publicUrl(event))) },
+            ],
+            isError: true,
+          },
+        }),
+      };
+    }
+
     return json(200, rpcError(null, -32603, err instanceof Error ? err.message : 'Internal error.'));
   } finally {
     logger.removeKeys(['correlationId']);
@@ -182,8 +288,8 @@ interface JsonRpcRequest {
   params?: Record<string, unknown>;
 }
 
-async function dispatch(request: JsonRpcRequest): Promise<unknown> {
-  const server = buildServer(catalog());
+async function dispatch(request: JsonRpcRequest, auth: AuthContext): Promise<unknown> {
+  const server = buildServer(catalog(), auth);
 
   switch (request.method) {
     case 'initialize':
@@ -318,6 +424,10 @@ function rpcError(id: string | number | null, code: number, message: string) {
 
 function json(statusCode: number, body: unknown): APIGatewayProxyResultV2 {
   return { statusCode, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
+}
+
+function publicUrl(event: APIGatewayProxyEventV2): string {
+  return `https://${event.headers.host ?? event.headers.Host ?? ''}`;
 }
 
 function required(name: string): string {

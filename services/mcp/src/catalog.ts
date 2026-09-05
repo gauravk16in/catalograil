@@ -4,6 +4,7 @@ import type {
   CheckoutInput,
   ComparisonResponse,
   McpResult,
+  PlaceOrderInput,
   SearchInput,
   SearchResponse,
 } from './port.js';
@@ -182,6 +183,128 @@ export class HttpCatalog implements CatalogPort {
       image_url: (raw.imageUrl as string) ?? null,
       product_url: null,
     };
+  }
+
+  /**
+   * The buyer's own token, forwarded — not the MCP server's credentials.
+   *
+   * The API decides what this buyer may see from the token it receives, so a mistake in the
+   * tool layer above cannot widen that. Signing these with the server's own role instead
+   * would make every buyer's data reachable by a bug in one `if`.
+   */
+  async myAddresses(token: string): Promise<unknown> {
+    return this.asBuyer('GET', '/buyer/addresses', token);
+  }
+
+  async myOrders(token: string, limit = 10): Promise<unknown> {
+    const orders = (await this.asBuyer('GET', '/buyer/orders', token)) as {
+      orders?: Record<string, unknown>[];
+    };
+    return { orders: (orders.orders ?? []).slice(0, limit) };
+  }
+
+  async orderStatus(token: string, orderNumber: string): Promise<unknown> {
+    const result = (await this.asBuyer('GET', '/buyer/orders', token)) as {
+      orders?: { orderNumber?: string }[];
+    };
+    const found = (result.orders ?? []).find((o) => o.orderNumber === orderNumber);
+    if (!found) {
+      // A quotable sentence, so the model states a fact rather than speculating about
+      // where the order went.
+      return { found: false, message: `No order ${orderNumber} on this account.` };
+    }
+    return { found: true, order: found };
+  }
+
+  /**
+   * Places an order using a saved address, without the buyer leaving the conversation.
+   *
+   * The address is resolved *here* from the buyer's own saved list rather than accepted as
+   * free text from the model — an assistant inventing a delivery address is a parcel sent to
+   * a place nobody lives, and it would be invented confidently.
+   */
+  async placeOrder(token: string, input: PlaceOrderInput): Promise<unknown> {
+    const { addresses } = (await this.asBuyer('GET', '/buyer/addresses', token)) as {
+      addresses: { id: string; isDefault: boolean; [key: string]: unknown }[];
+    };
+
+    const address = input.address_id
+      ? addresses.find((a) => a.id === input.address_id)
+      : (addresses.find((a) => a.isDefault) ?? addresses[0]);
+
+    if (!address) {
+      return {
+        ok: false,
+        error: 'no_address',
+        message:
+          'This account has no saved delivery address. Add one at the Conciergent site, then ' +
+          'try again.',
+      };
+    }
+
+    const profile = (await this.asBuyer('GET', '/buyer/me', token)) as { email?: string };
+    if (!profile.email) {
+      return { ok: false, error: 'no_email', message: 'This account has no email for the receipt.' };
+    }
+
+    const session = (await this.post('/checkout/session', {
+      productId: input.product_id,
+      ...(input.variant_id ? { variantId: input.variant_id } : {}),
+      quantity: input.quantity ?? 1,
+      buyerEmail: profile.email,
+    })) as { sessionId?: string; checkoutUrl?: string; summary?: unknown };
+
+    const paid = (await this.post('/checkout/pay', {
+      sessionId: session.sessionId,
+      buyerEmail: profile.email,
+      buyerPhone: address.recipientPhone,
+      shippingAddress: {
+        recipientName: address.recipientName,
+        recipientPhone: address.recipientPhone,
+        line1: address.line1,
+        line2: address.line2 ?? '',
+        landmark: address.landmark ?? '',
+        city: address.city,
+        state: address.state,
+        pincode: address.pincode,
+      },
+    })) as { results?: { ok: boolean; orderNumber?: string; error?: string; merchantName?: string }[] };
+
+    const result = paid.results?.[0];
+    if (!result?.ok) {
+      return { ok: false, error: result?.error ?? 'Order could not be placed.' };
+    }
+
+    return {
+      ok: true,
+      order_number: result.orderNumber,
+      merchant: result.merchantName,
+      shipping_to: `${address.city}, ${address.state} ${address.pincode}`,
+      summary: session.summary,
+      /**
+       * The payment link, said plainly.
+       *
+       * The order exists but is not paid: Razorpay's checkout needs the buyer, and a model
+       * must not imply money has moved when it has not.
+       */
+      payment_url: session.checkoutUrl,
+      note:
+        'The order is reserved but not yet paid. Give the buyer the payment link — they pay ' +
+        'the merchant directly, and the stock is held for twenty minutes.',
+    };
+  }
+
+  private async asBuyer(method: string, path: string, token: string): Promise<unknown> {
+    const response = await fetch(`${this.options.apiBaseUrl}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    });
+    if (!response.ok) {
+      throw new AppError('SEARCH_FAILED', `The account service returned ${response.status}.`, {
+        details: { path },
+      });
+    }
+    return response.json();
   }
 
   private async post(path: string, body: unknown): Promise<{

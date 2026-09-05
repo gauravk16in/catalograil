@@ -85,6 +85,35 @@ export const createCheckoutSchema = {
   buyer_email: z.string().email().optional(),
 };
 
+/** T2.7 — the authenticated tools. Each needs a scope the buyer granted explicitly. */
+export const getMyAddressesSchema = {};
+
+export const listMyOrdersSchema = {
+  limit: z.number().int().min(1).max(20).default(10).optional(),
+};
+
+export const getOrderStatusSchema = {
+  order_number: z.string().trim().min(3).max(40).describe('From list_my_orders, e.g. ORD-7K2M9X.'),
+};
+
+export const placeOrderSchema = {
+  product_id: z.string().uuid().describe('The `product_id` from a search result.'),
+  variant_id: z
+    .string()
+    .uuid()
+    .optional()
+    .describe('Which variant — a search result’s `id`. Required when the product has options.'),
+  quantity: z.number().int().min(1).max(20).default(1),
+  address_id: z
+    .string()
+    .uuid()
+    .optional()
+    .describe(
+      'Which saved address to ship to, from get_my_addresses. Omit to use their default. ' +
+        'Always tell the buyer which address you are using before calling this.',
+    ),
+};
+
 /**
  * The server description, which is the single most consequential string in this service.
  *
