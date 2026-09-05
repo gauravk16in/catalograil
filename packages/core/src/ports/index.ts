@@ -82,6 +82,22 @@ export interface IngestionMessage {
   readonly s3Key: string;
 }
 
+/**
+ * One slot of a website import.
+ *
+ * The message carries its own position rather than the worker tracking one, so a slot that
+ * is redelivered redoes exactly the fifty products it was given — and the next slot is
+ * enqueued only once the current one has landed. An import of four thousand products is
+ * therefore eighty bounded invocations rather than one that has to finish before a Lambda
+ * timeout it cannot predict.
+ */
+export interface SiteImportMessage {
+  readonly jobId: string;
+  readonly merchantId: string;
+  readonly siteUrl: string;
+  readonly offset: number;
+}
+
 /** One message per product, enqueued after a successful import (T1.13). */
 export interface EnrichmentMessage {
   readonly productId: string;

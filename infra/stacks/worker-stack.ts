@@ -80,6 +80,41 @@ export class WorkerStack extends Stack {
     grantDatabase(proxy, ingestion);
     grantSesSend(ingestion, props.sesFromAddress);
 
+    // ── Website import ──────────────────────────────────────────────────────────
+    const siteImport = createFunction(this, 'SiteImportWorker', {
+      config,
+      entry: path.join(REPO_ROOT, 'services/workers/site-import/src/handler.ts'),
+      vpc,
+      securityGroups: [lambdaSecurityGroup],
+      /**
+       * Bounded by the slot, not by the catalogue.
+       *
+       * Fifty products, each possibly a page fetch with an eight-second ceiling, is the
+       * worst case this has to fit inside — and it is the same worst case whether the
+       * merchant has forty products or four thousand, which is the entire reason the import
+       * is sliced rather than run in one pass.
+       */
+      timeout: Duration.minutes(10),
+      memorySize: 1024,
+      environment: {
+        ...dbEnv,
+        SQS_QUEUE_ENRICHMENT: props.queues.enrichment.queueUrl,
+        SQS_QUEUE_SITE_IMPORT: props.queues['site-import'].queueUrl,
+      },
+    });
+
+    siteImport.addEventSource(
+      new SqsEventSource(props.queues['site-import'], {
+        batchSize: 1,
+        reportBatchItemFailures: true,
+      }),
+    );
+
+    props.queues.enrichment.grantSendMessages(siteImport);
+    // Its own queue: each slot enqueues the next one only once its work is written.
+    props.queues['site-import'].grantSendMessages(siteImport);
+    grantDatabase(proxy, siteImport);
+
     // ── Embedding (T1.15) ───────────────────────────────────────────────────────
     const embedding = createFunction(this, 'EmbeddingWorker', {
       config,

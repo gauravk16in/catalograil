@@ -21,6 +21,11 @@ import {
 } from '@catalograil/razorpay';
 import { submitPolicies, type PolicyDeps } from './handlers/onboarding.js';
 import {
+  listSiteImports,
+  startSiteImport,
+  type SiteImportDeps,
+} from './handlers/site-import.js';
+import {
   catalogueSummary,
   getPipelineStatus,
   retryAllFailed,
@@ -37,7 +42,7 @@ import {
 } from './handlers/products.js';
 import { SqsQueue } from '@catalograil/aws';
 import { getSql } from '@catalograil/db';
-import type { EnrichmentMessage } from '@catalograil/core';
+import type { EnrichmentMessage, SiteImportMessage } from '@catalograil/core';
 
 const logger = new Logger({ serviceName: 'api-merchant' });
 
@@ -52,6 +57,26 @@ function deps(): UploadDeps {
     };
   }
   return cached;
+}
+
+let cachedSiteImportDeps: SiteImportDeps | undefined;
+
+/**
+ * The website importer's dependencies.
+ *
+ * Separate from the upload deps because it needs a queue and no object store — and because
+ * `SQS_QUEUE_SITE_IMPORT` being absent should fail the one route that needs it rather than
+ * every route that happens to share a cache entry with it.
+ */
+function siteImportDeps(): SiteImportDeps {
+  if (!cachedSiteImportDeps) {
+    cachedSiteImportDeps = {
+      db: getDb(),
+      queue: new SqsQueue<SiteImportMessage>(required('SQS_QUEUE_SITE_IMPORT')),
+      clock: systemClock,
+    };
+  }
+  return cachedSiteImportDeps;
 }
 
 /**
@@ -280,6 +305,21 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
     if (method === 'POST' && path === '/merchant/payment-config/test-webhook') {
       return json(200, await testWebhook(paymentDeps(), requireMerchantId(event)));
+    }
+
+    /**
+     * T-site — importing a catalogue from the merchant's own website.
+     *
+     * Before the CSV routes deliberately: this is the path most merchants should take, and
+     * the one the dashboard offers first.
+     */
+    if (method === 'GET' && path === '/merchant/imports/site') {
+      return json(200, await listSiteImports(deps().db, requireMerchantId(event)));
+    }
+
+    if (method === 'POST' && path === '/merchant/imports/site') {
+      const merchantId = requireMerchantId(event);
+      return json(202, await startSiteImport(merchantId, parseBody(event), siteImportDeps()));
     }
 
     if (method === 'GET' && path === '/merchant/uploads') {

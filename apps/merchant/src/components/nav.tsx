@@ -8,6 +8,7 @@ const LINKS = [
   { href: '/products', label: 'Products' },
   { href: '/inventory', label: 'Inventory' },
   { href: '/orders', label: 'Orders' },
+  { href: '/imports', label: 'Import' },
   { href: '/uploads', label: 'Uploads' },
   { href: '/policies', label: 'Policies' },
   { href: '/preview', label: 'Preview in AI' },

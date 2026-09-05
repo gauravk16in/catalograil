@@ -95,6 +95,7 @@ const api = new ApiStack(app, stackName('Api', config), {
   queryCacheTable: data.tables.QueryCache!,
   searchLogsTable: data.tables.SearchLogs!,
   enrichmentQueue: queues.queues.enrichment,
+  siteImportQueue: queues.queues['site-import'],
   tokenKey: data.tokenKey,
   idempotencyTable: data.tables.IdempotencyKeys!,
   sessionsTable: data.tables.Sessions!,

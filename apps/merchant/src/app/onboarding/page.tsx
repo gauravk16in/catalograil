@@ -69,9 +69,9 @@ export default function OnboardingPage() {
     },
     {
       key: 'catalogue',
-      title: 'Add your first products',
-      why: 'Upload a CSV or add one by hand. Nothing reaches search until it has been enriched and indexed, and the products page shows where each one is.',
-      href: '/products',
+      title: 'Import your catalogue from your website',
+      why: 'Give us your storefront address and we read your products from it — names, images, every variant and price — fifty at a time. They arrive as drafts for you to check. A CSV or a manual entry works too, and is the way in for a site with nothing machine-readable on it.',
+      href: '/imports',
       done: false,
     },
   ];

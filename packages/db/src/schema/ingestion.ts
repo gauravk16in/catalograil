@@ -77,3 +77,51 @@ export const productPipelineEvents = pgTable(
   },
   (t) => [index('product_pipeline_events_product_idx').on(t.productId, t.createdAt)],
 );
+
+export const SITE_IMPORT_STATUSES = ['queued', 'running', 'completed', 'failed'] as const;
+export type SiteImportStatus = (typeof SITE_IMPORT_STATUSES)[number];
+
+/**
+ * Importing a merchant's catalogue from their own website.
+ *
+ * Separate from `ingestion_jobs` rather than a flag on it, because almost nothing they
+ * record is the same: there is no S3 object, no template, no rows and no line numbers to
+ * report errors against. Sharing the table would have meant half its columns being null
+ * for one kind of job and the other half for the other, and a status query that has to
+ * know which kind it is looking at.
+ *
+ * `products_found` climbs as slots complete, so the dashboard has a number that moves
+ * rather than a spinner — an import of four thousand products is otherwise indistinguishable
+ * from one that has hung.
+ */
+export const siteImportJobs = pgTable(
+  'site_import_jobs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    merchantId: uuid('merchant_id')
+      .notNull()
+      .references(() => merchants.id, { onDelete: 'cascade' }),
+    siteUrl: text('site_url').notNull(),
+    status: text('status').$type<SiteImportStatus>().default('queued').notNull(),
+    /** shopify | json-ld | none — which reader worked, which is what explains what was missed. */
+    method: text('method'),
+    /** Position in the discovered catalogue, so a redelivered slot resumes rather than repeats. */
+    nextOffset: integer('next_offset').default(0).notNull(),
+    slotsDone: integer('slots_done').default(0).notNull(),
+    productsFound: integer('products_found').default(0).notNull(),
+    productsCreated: integer('products_created').default(0).notNull(),
+    productsUpdated: integer('products_updated').default(0).notNull(),
+    variantsUpserted: integer('variants_upserted').default(0).notNull(),
+    /** Pages that were product-shaped but could not be read, with the reason. Capped. */
+    skipped: jsonb('skipped').$type<{ url: string; reason: string }[]>(),
+    /** Set when the site itself could not be used at all, e.g. nothing machine-readable. */
+    rejectionReason: text('rejection_reason'),
+    startedAt: tstz('started_at'),
+    completedAt: tstz('completed_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('site_import_jobs_merchant_created_idx').on(t.merchantId, t.createdAt),
+    check('site_import_jobs_status_check', sql`${t.status} IN (${inList(SITE_IMPORT_STATUSES)})`),
+  ],
+);

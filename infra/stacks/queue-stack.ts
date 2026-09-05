@@ -17,6 +17,7 @@ export interface QueueStackProps extends StackProps {
 /** The Phase 1 queues (T1.4). */
 export const QUEUE_NAMES = [
   'ingestion',
+  'site-import',
   'enrichment',
   'embedding',
   'notification',
@@ -37,6 +38,13 @@ const QUEUE_SPECS: Record<QueueName, QueueSpec> = {
     // the visibility timeout has to cover the worst case, not the measured one.
     visibilityTimeout: Duration.minutes(15),
     description: 'CSV parse, validate and upsert',
+  },
+  'site-import': {
+    // One slot is fifty products, each of which may cost a page fetch: the worst case is
+    // fifty eight-second timeouts, and the visibility timeout has to cover it or the slot
+    // is redelivered while it is still writing.
+    visibilityTimeout: Duration.minutes(15),
+    description: 'Read a merchant catalogue from their own website, fifty products a slot',
   },
   enrichment: {
     visibilityTimeout: Duration.minutes(5),

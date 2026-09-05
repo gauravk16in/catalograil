@@ -57,6 +57,13 @@
       "when": 1788600600149,
       "tag": "0007_milky_mach_iv",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788623105847,
+      "tag": "0008_free_rhino",
+      "breakpoints": true
     }
   ]
 }

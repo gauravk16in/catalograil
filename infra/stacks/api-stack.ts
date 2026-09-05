@@ -31,6 +31,8 @@ export interface ApiStackProps extends StackProps {
   readonly searchLogsTable: dynamodb.ITable;
   /** Product writes enqueue enrichment; `/health/deep` also probes it. */
   readonly enrichmentQueue: sqs.IQueue;
+  /** Where `POST /merchant/imports/site` puts the first slot of a website import. */
+  readonly siteImportQueue: sqs.IQueue;
   /** Envelope-encrypts merchant Razorpay credentials (rule 3, S3.1). */
   readonly tokenKey: kms.IKey;
   /** Conditional writes that make webhook delivery idempotent (rule 2, T2.16). */
@@ -87,6 +89,7 @@ export class ApiStack extends Stack {
         S3_BUCKET_UPLOADS: props.uploadsBucket.bucketName,
         // Product create and update enqueue enrichment (T1.12).
         SQS_QUEUE_ENRICHMENT: props.enrichmentQueue.queueUrl,
+        SQS_QUEUE_SITE_IMPORT: props.siteImportQueue.queueUrl,
         // Read only by `/health/deep`, which probes each dependency by name.
         DDB_TABLE_QUERY_CACHE: props.queryCacheTable.tableName,
         BEDROCK_REGION: this.region,
@@ -106,6 +109,7 @@ export class ApiStack extends Stack {
     // Presigning a PUT requires the permission the URL will carry.
     props.uploadsBucket.grantPut(merchantApi);
     props.enrichmentQueue.grantSendMessages(merchantApi);
+    props.siteImportQueue.grantSendMessages(merchantApi);
 
     /**
      * Permissions `/health/deep` needs to probe each dependency.
