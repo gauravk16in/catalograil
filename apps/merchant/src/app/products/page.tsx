@@ -47,6 +47,9 @@ export default function ProductsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** The product a merchant has asked to remove, held until they confirm. */
+  const [removing, setRemoving] = useState<ProductRow | null>(null);
+  const [working, setWorking] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
@@ -99,6 +102,47 @@ export default function ProductsPage() {
       await load();
     } catch (err) {
       setError(describeError(err));
+    }
+  }
+
+  /**
+   * Removing is archiving, and the wording says so.
+   *
+   * A destructive-sounding button that is actually reversible should say it is reversible —
+   * a merchant who believes "remove" means "gone" will not press it, and will instead leave
+   * a wrong listing live. The rows genuinely stay: orders reference them, and a buyer's
+   * history must not develop holes because a merchant tidied up.
+   */
+  async function remove(product: ProductRow) {
+    setWorking(true);
+    setError(null);
+    try {
+      await api.del(`/merchant/products/${product.id}`);
+      setNotice(
+        `“${product.name}” is out of search. It stays in your catalogue as removed, and any ` +
+          'order that already contains it is unaffected. You can put it back.',
+      );
+      setRemoving(null);
+      await load();
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function restore(product: ProductRow) {
+    setWorking(true);
+    setError(null);
+    try {
+      await api.post(`/merchant/products/${product.id}/restore`, {});
+      // Re-indexed rather than re-embedded: the content has not changed (rule 9).
+      setNotice(`“${product.name}” is back. It returns to search once it has been re-indexed.`);
+      await load();
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setWorking(false);
     }
   }
 
@@ -212,6 +256,26 @@ export default function ProductsPage() {
                       </span>
                     )}
                     <Badge tone={state.tone}>{state.label}</Badge>
+
+                    {product.status === 'archived' ? (
+                      <button
+                        type="button"
+                        disabled={working}
+                        onClick={() => void restore(product)}
+                        className="text-sm underline disabled:opacity-50"
+                      >
+                        Restore
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={working}
+                        onClick={() => setRemoving(product)}
+                        className="text-sm text-[hsl(var(--danger))] underline disabled:opacity-50"
+                      >
+                        Remove
+                      </button>
+                    )}
                   </div>
                 </li>
               );
@@ -219,6 +283,36 @@ export default function ProductsPage() {
           </ul>
         )}
       </Card>
+
+      {/* Confirmed once, in a sentence that says what actually happens. A merchant removing
+          fifty imported products one by one should not be asked a vague question fifty
+          times, but they should be asked. */}
+      {removing && (
+        <div
+          className="fixed inset-0 z-40 grid place-items-center bg-black/30 px-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-md space-y-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--bg))] p-5">
+            <div>
+              <h2 className="text-sm font-semibold">Remove “{removing.name}”?</h2>
+              <p className="mt-1.5 text-sm text-[hsl(var(--muted))]">
+                It comes out of search straight away, so buyers and assistants stop seeing it.
+                Orders that already contain it are unaffected, and you can put it back at any
+                time.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" type="button" onClick={() => setRemoving(null)}>
+                Cancel
+              </Button>
+              <Button variant="danger" type="button" disabled={working} onClick={() => void remove(removing)}>
+                {working ? 'Removing…' : 'Remove it'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

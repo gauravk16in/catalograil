@@ -6,7 +6,13 @@ import { eq } from 'drizzle-orm';
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { archiveProduct, createProduct, updateProduct, type ProductDeps } from './products.js';
+import {
+  archiveProduct,
+  createProduct,
+  restoreProduct,
+  updateProduct,
+  type ProductDeps,
+} from './products.js';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const NOW = new Date('2026-09-04T12:00:00Z');
@@ -264,5 +270,49 @@ describe.skipIf(!DATABASE_URL)('manual product endpoints', () => {
       .from(productVariants)
       .where(eq(productVariants.productId, created.productId));
     expect(variants.length).toBeGreaterThan(0);
+  });
+
+  it('puts a removed product back, and re-queues it so search sees it again', async () => {
+    const d = deps();
+    const created = await createProduct(d, merchantId, {
+      externalRef: `restore-${randomUUID().slice(0, 8)}`,
+      archetype: 'SIMPLE',
+      name: 'Restorable Thing',
+      attributes: {},
+      images: [],
+      optionAxes: [],
+      variants: [{ sku: 'RES-001', optionValues: {}, price: '100', stock: 1, images: [] }],
+    });
+
+    await archiveProduct(d, merchantId, created.productId);
+    const before = d.enrichmentQueue.messages.length;
+
+    const restored = await restoreProduct(d, merchantId, created.productId);
+    expect(restored.status).toBe('active');
+
+    const [row] = await db.select().from(products).where(eq(products.id, created.productId));
+    expect(row!.status).toBe('active');
+    /**
+     * The archive trigger left the units `pending`; nothing re-indexes them on its own, so
+     * restoring has to enqueue or the product comes back in the dashboard and stays
+     * invisible to buyers — the worst of both.
+     */
+    expect(d.enrichmentQueue.messages.length).toBe(before + 1);
+  });
+
+  it('refuses to restore something that was never removed', async () => {
+    const d = deps();
+    const created = await createProduct(d, merchantId, {
+      externalRef: `live-${randomUUID().slice(0, 8)}`,
+      archetype: 'SIMPLE',
+      name: 'Live Thing',
+      attributes: {},
+      images: [],
+      optionAxes: [],
+      variants: [{ sku: 'LIV-001', optionValues: {}, price: '100', stock: 1, images: [] }],
+    });
+
+    // A draft flipped to active here would be published without ever being enriched.
+    await expect(restoreProduct(d, merchantId, created.productId)).rejects.toThrow();
   });
 });

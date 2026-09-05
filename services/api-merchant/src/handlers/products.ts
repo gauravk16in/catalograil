@@ -300,6 +300,11 @@ export async function updateProduct(
 /**
  * Soft delete. The T1.16 trigger takes the product out of search; the rows stay, because
  * orders reference them and a buyer's history must not develop holes.
+ *
+ * Reversible on purpose — see `restoreProduct`. A merchant removing a listing is usually
+ * doing housekeeping, not making a decision they have thought hard about, and a one-way
+ * button on a catalogue they spent an afternoon importing is a button they will be afraid
+ * to press.
  */
 export async function archiveProduct(
   deps: ProductDeps,
@@ -314,6 +319,39 @@ export async function archiveProduct(
 
   if (!updated[0]) throw new AppError('NOT_FOUND', 'No such product.');
   return { productId, status: 'archived' };
+}
+
+/**
+ * Puts a removed product back.
+ *
+ * The archive trigger marks the product's searchable units `pending` rather than deleting
+ * them, so restoring is a re-index rather than a re-embed: the content hash has not changed,
+ * and rule 9 means the expensive half is skipped. But nothing re-indexes on its own — the
+ * units would sit pending forever — so this enqueues the product exactly as an edit does.
+ */
+export async function restoreProduct(
+  deps: ProductDeps,
+  merchantId: string,
+  productId: string,
+): Promise<{ productId: string; status: string }> {
+  const updated = await deps.db
+    .update(products)
+    .set({ status: 'active', updatedAt: deps.clock.now() })
+    .where(
+      and(
+        eq(products.id, productId),
+        eq(products.merchantId, merchantId),
+        // Only an archived product is restorable. Flipping a draft to active here would
+        // publish something that has never been through enrichment.
+        eq(products.status, 'archived'),
+      ),
+    )
+    .returning({ id: products.id });
+
+  if (!updated[0]) throw new AppError('NOT_FOUND', 'No removed product with that id.');
+
+  await deps.enrichmentQueue.send({ productId, merchantId });
+  return { productId, status: 'active' };
 }
 
 /** `use_cases` → `useCases`, matching the schema's field names. */

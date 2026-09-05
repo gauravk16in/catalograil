@@ -36,6 +36,7 @@ import { getOrder, listOrders, orderSummary, transitionOrder } from './handlers/
 import { getSession } from './handlers/session.js';
 import {
   archiveProduct,
+  restoreProduct,
   createProduct,
   updateProduct,
   type ProductDeps,
@@ -184,6 +185,12 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       if (method === 'DELETE') {
         return json(200, await archiveProduct(productDeps(), merchantId, productId));
       }
+    }
+
+    const restoreMatch = /^\/merchant\/products\/([0-9a-fA-F-]{36})\/restore$/.exec(path);
+    if (restoreMatch && method === 'POST') {
+      const merchantId = requireMerchantId(event);
+      return json(200, await restoreProduct(productDeps(), merchantId, restoreMatch[1]!));
     }
 
     // ── Pipeline status and retry (Block E) ─────────────────────────────────────
