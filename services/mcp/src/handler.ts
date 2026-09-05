@@ -131,6 +131,9 @@ function catalog(): HttpCatalog {
 export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
   const correlationId = event.requestContext.requestId;
   logger.appendKeys({ correlationId });
+  // Held outside the try so a failure still answers the request it was answering. A client
+  // matching responses to requests treats a null id as unmatched and waits.
+  let requestId: string | number | null = null;
 
   try {
     const method = event.requestContext.http.method;
@@ -191,23 +194,29 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       return json(400, rpcError(body?.id ?? null, -32600, 'Not a JSON-RPC 2.0 request.'));
     }
 
+    requestId = body.id ?? null;
+
     /**
-     * The connect-time challenge, and the reason a buyer ever sees a login screen.
+     * The challenge that makes a buyer see a login screen — on the personal tools only.
      *
-     * An assistant starts OAuth when it is refused, and never before. Leaving `initialize`
-     * and `tools/list` open meant Claude completed its handshake, listed the tools, showed
-     * the connector as connected, and only discovered there was an account to sign into when
-     * a personal tool failed mid-conversation — by which point it had already told the buyer
-     * something else. So the handshake itself is challenged.
+     * An assistant starts OAuth when it is refused and never before, so *something* has to
+     * refuse it. But refusing the handshake refuses everyone: searching is the thing a buyer
+     * does before they have any reason to trust us with an account, and an assistant that
+     * cannot answer "what shirts are under ₹2,500" without a sign-up is worth less than one
+     * that can. So the line is drawn at the tools that read or act on someone's own data —
+     * their addresses, their orders, an order placed in their name. Those are refused, the
+     * connector starts the flow, and searching keeps working throughout.
      *
-     * The cost is real and deliberate: there is no anonymous browsing through MCP any more.
-     * Search stays public on the web API, where a session can exist without an account; here
-     * every caller is someone who has approved what their assistant may do.
+     * The tools also refuse themselves, in `requireToken`. This check is here because it can
+     * refuse before the request costs anything, not because that one is redundant.
      */
     const authorizationHeader = event.headers.authorization ?? event.headers.Authorization;
-    if (!authorizationHeader && CHALLENGED_METHODS.has(body.method)) {
-      logger.info('Unauthenticated request challenged', { rpcMethod: body.method });
-      return unauthorized(event, body.id ?? null);
+    if (!authorizationHeader && body.method === 'tools/call') {
+      const toolName = (body.params as { name?: string } | undefined)?.name ?? '';
+      if (AUTHENTICATED_TOOLS.has(toolName)) {
+        logger.info('Unauthenticated call to a personal tool', { tool: toolName });
+        return unauthorized(event, requestId);
+      }
     }
 
     /**
@@ -293,10 +302,10 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
      * buyer if the connector does not.
      */
     if ((err as { code?: string }).code === 'UNAUTHENTICATED') {
-      return unauthorized(event, null);
+      return unauthorized(event, requestId);
     }
 
-    return json(200, rpcError(null, -32603, err instanceof Error ? err.message : 'Internal error.'));
+    return json(200, rpcError(requestId, -32603, err instanceof Error ? err.message : 'Internal error.'));
   } finally {
     logger.removeKeys(['correlationId']);
   }
@@ -419,8 +428,16 @@ function rpcError(id: string | number | null, code: number, message: string) {
   return { jsonrpc: '2.0', id, error: { code, message } };
 }
 
-/** The JSON-RPC methods that require an account before they will answer. */
-const CHALLENGED_METHODS = new Set(['initialize', 'tools/list', 'tools/call', 'resources/list', 'prompts/list']);
+/**
+ * The tools that need an account. Everything else — searching, comparing, reading a
+ * merchant's policies, starting a checkout — answers anyone.
+ */
+const AUTHENTICATED_TOOLS = new Set([
+  'get_my_addresses',
+  'list_my_orders',
+  'get_order_status',
+  'place_order',
+]);
 
 /**
  * A 401 carrying both halves of the answer.
