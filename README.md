@@ -136,31 +136,45 @@ marketplaces that could put you there take a commission and stand between you an
 
 ### How Data Moves
 
+
+```mermaid
+flowchart TB
+    subgraph INGESTION["Merchant catalogue pipeline"]
+        direction LR
+        UPLOAD["Merchant uploads CSV"] --> S3["Amazon S3"]
+        S3 --> INGEST_Q["Amazon SQS"]
+        INGEST_Q --> INGEST["Ingestion worker"]
+        INGEST --> PRODUCTS[("Postgres<br/>products + variants")]
+        PRODUCTS --> ENRICH_Q["Amazon SQS"]
+        ENRICH_Q --> ENRICH["Enrichment worker<br/>Claude on Amazon Bedrock<br/>category · attributes · use cases · keywords"]
+        ENRICH --> EMBED_Q["Amazon SQS"]
+        EMBED_Q --> EMBED["Embedding worker<br/>Cohere Embed v4<br/>1024 dimensions"]
+        EMBED --> UNITS[("searchable_units<br/>the single table read by search")]
+    end
+
+    subgraph SEARCH["Buyer search path"]
+        direction LR
+        BUYER["Buyer asks"] --> MCP["MCP tool"]
+        MCP --> HYBRID["Hybrid query"]
+        HYBRID -->|"reads"| UNITS
+        UNITS --> RERANK["Rerank"]
+        RERANK --> DEDUPE["Dedupe"]
+        DEDUPE --> RESULTS["Up to 5 results"]
+    end
+
+    classDef source fill:#f5f5f0,stroke:#20251f,color:#20251f;
+    classDef queue fill:#fff4ce,stroke:#9a7412,color:#3f3108;
+    classDef worker fill:#eaf4ff,stroke:#3777a8,color:#17364f;
+    classDef data fill:#e9f9df,stroke:#5d913d,color:#203617;
+    classDef result fill:#20251f,stroke:#20251f,color:#ffffff;
+
+    class UPLOAD,BUYER,MCP,HYBRID source;
+    class INGEST_Q,ENRICH_Q,EMBED_Q queue;
+    class INGEST,ENRICH,EMBED,RERANK,DEDUPE worker;
+    class S3,PRODUCTS,UNITS data;
+    class RESULTS result;
 ```
-Merchant uploads CSV
-        │
-        ▼
-   S3 ──► SQS ──► Ingestion worker ──► products + variants  (Postgres)
-                                              │
-                                              ▼
-                                         SQS ──► Enrichment worker
-                                                 (Claude on Bedrock:
-                                                  category, attributes,
-                                                  use cases, keywords)
-                                              │
-                                              ▼
-                                         SQS ──► Embedding worker
-                                                 (Cohere Embed v4, 1024-dim)
-                                              │
-                                              ▼
-                                     searchable_units  ◄── the one table search reads
-                                              ▲
-                                              │
-  Buyer asks ──► MCP tool ──► hybrid query ───┘
-                                  │
-                                  ▼
-                       rerank ──► dedupe ──► ≤5 results
-```
+
 
 Price and stock changes reach search in under a second through database triggers, and
 **never** trigger re-embedding — re-embedding happens only when the text that describes a
