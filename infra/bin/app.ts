@@ -82,6 +82,7 @@ const api = new ApiStack(app, stackName('Api', config), {
   searchLogsTable: data.tables.SearchLogs!,
   enrichmentQueue: queues.queues.enrichment,
   tokenKey: data.tokenKey,
+  idempotencyTable: data.tables.IdempotencyKeys!,
   merchantPool: auth.merchantPool,
   merchantPoolClient: auth.merchantClient,
   buyerPool: auth.buyerPool,

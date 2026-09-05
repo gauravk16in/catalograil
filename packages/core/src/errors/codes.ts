@@ -18,6 +18,12 @@ export const ERROR_CODES = [
   'PAYMENT_CONFIG_MISSING',
   /** Credentials exist but did not verify, or Razorpay has since rejected them. */
   'PAYMENT_CONFIG_INVALID',
+  /** Razorpay refused or could not be reached while creating an order (T2.15). */
+  'PAYMENT_CREATE_FAILED',
+  /** Someone else took the last unit between search and checkout (T2.15). */
+  'INSUFFICIENT_STOCK',
+  /** The price moved between the cart snapshot and checkout (T2.15).*/
+  'PRICE_MOVED',
   /**
    * A confirmed Cognito user whose post-confirmation trigger has not linked them to a
    * merchant or buyer row yet. Deliberately not UNAUTHENTICATED: the client must not clear
@@ -25,6 +31,10 @@ export const ERROR_CODES = [
    * token. Retrying is what resolves it.
    */
   'ACCOUNT_NOT_LINKED',
+  /** A handoff link that is malformed, forged, or already used (T2.14). */
+  'INVALID_HANDOFF_TOKEN',
+  /** A handoff link that was valid and is simply old — not the buyer's fault. */
+  'HANDOFF_TOKEN_EXPIRED',
   // catalog / ingestion
   'CSV_HEADER_MISMATCH',
   'CSV_ROW_INVALID',

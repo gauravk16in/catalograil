@@ -2,6 +2,10 @@ import { Logger } from '@aws-lambda-powertools/logger';
 import { AppError, requireBuyer } from '@catalograil/core';
 import { getDb, type Database } from '@catalograil/db';
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
+import { DynamoIdempotencyStore } from '@catalograil/aws';
+import { KmsTokenCipher } from '@catalograil/razorpay';
+import { systemClock } from '@catalograil/core';
+import { handleRazorpayWebhook } from './handlers/webhook.js';
 import {
   createAddress,
   deleteAddress,
@@ -36,6 +40,38 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   try {
     const method = event.requestContext.http.method;
     const path = event.rawPath.replace(/\/+$/, '') || '/';
+    /**
+     * The webhook is handled before any identity is required.
+     *
+     * It is called by Razorpay, not by a buyer — there is no JWT and never will be. Its
+     * authentication is the HMAC signature verified against the merchant's own secret,
+     * which is stronger than a bearer token for this purpose because it also proves the
+     * body was not altered in transit.
+     */
+    const webhookMatch = /^\/webhooks\/razorpay\/([0-9a-fA-F-]{36})$/.exec(path);
+    if (method === 'POST' && webhookMatch) {
+      const raw = event.isBase64Encoded && event.body
+        ? Buffer.from(event.body, 'base64').toString('utf8')
+        : (event.body ?? '');
+
+      const result = await handleRazorpayWebhook(
+        {
+          db: db(),
+          clock: systemClock,
+          cipherFor: (id) => new KmsTokenCipher(required('KMS_TOKEN_KEY_ID'), id),
+          idempotency: new DynamoIdempotencyStore(required('DDB_TABLE_IDEMPOTENCY')),
+        },
+        webhookMatch[1]!,
+        raw,
+        // Razorpay's header. Read case-insensitively because gateways normalise differently.
+        event.headers['x-razorpay-signature'] ?? event.headers['X-Razorpay-Signature'],
+      );
+
+      // Always 200 on a handled or duplicate event: a non-2xx makes Razorpay retry, and a
+      // duplicate is a success from their point of view.
+      return json(200, result);
+    }
+
     const caller = requireBuyer(event as never);
 
     if (path === '/buyer/me') {
@@ -79,6 +115,12 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   } finally {
     logger.removeKeys(['correlationId']);
   }
+}
+
+function required(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new AppError('INTERNAL_ERROR', `${name} is not set.`);
+  return value;
 }
 
 function parseBody(event: APIGatewayProxyEventV2): unknown {

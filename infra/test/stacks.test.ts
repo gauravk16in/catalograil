@@ -62,6 +62,7 @@ function synth(env: 'dev' | 'prod' = 'dev') {
     searchLogsTable: data.tables.SearchLogs!,
     enrichmentQueue: queues.queues.enrichment,
     tokenKey: data.tokenKey,
+  idempotencyTable: data.tables.IdempotencyKeys!,
   });
 
   return {
@@ -178,8 +179,14 @@ describe('api stack', () => {
      * into Claude and ChatGPT where there is no login at all — so gating it here would be
      * pretending the data is more private than it is. Everything personal (`/buyer/*`)
      * stays behind the buyer pool.
+     *
+     * `/webhooks/razorpay/*` is called by Razorpay, which has no JWT of ours and never
+     * will. It is authenticated by an HMAC signature verified against the merchant's own
+     * webhook secret — stronger than a bearer token here, because it also proves the body
+     * was not altered in transit. Unauthenticated *at the gateway* is not the same as
+     * unauthenticated.
      */
-    const PUBLIC = ['/health', 'POST /search'];
+    const PUBLIC = ['/health', 'POST /search', '/webhooks/razorpay/'];
 
     for (const [id, route] of Object.entries(routes)) {
       const key = String(route.Properties?.RouteKey ?? '');

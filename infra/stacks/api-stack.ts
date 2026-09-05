@@ -33,6 +33,8 @@ export interface ApiStackProps extends StackProps {
   readonly enrichmentQueue: sqs.IQueue;
   /** Envelope-encrypts merchant Razorpay credentials (rule 3, S3.1). */
   readonly tokenKey: kms.IKey;
+  /** Conditional writes that make webhook delivery idempotent (rule 2, T2.16). */
+  readonly idempotencyTable: dynamodb.ITable;
   /**
    * Cognito pools (DC1). Optional so the API can still be synthesised and deployed before
    * the auth stack exists — without them the routes keep the IAM gate rather than becoming
@@ -334,10 +336,29 @@ export class ApiStack extends Stack {
       securityGroups: [lambdaSecurityGroup],
       timeout: Duration.seconds(29),
       memorySize: 1024,
-      environment: databaseEnvironment(proxy.endpoint),
+      environment: {
+        ...databaseEnvironment(proxy.endpoint),
+        KMS_TOKEN_KEY_ID: props.tokenKey.keyId,
+        DDB_TABLE_IDEMPOTENCY: props.idempotencyTable.tableName,
+      },
     });
 
     proxy.grantConnect(buyerApi, 'catalograil');
+    props.tokenKey.grantEncryptDecrypt(buyerApi);
+    props.idempotencyTable.grantReadWriteData(buyerApi);
+
+    /**
+     * The Razorpay webhook, unauthenticated at the gateway and authenticated by HMAC.
+     *
+     * Razorpay has no JWT of ours and never will. Its signature — verified against the
+     * merchant's own secret — proves both who sent it and that the body is unaltered, which
+     * a bearer token would not.
+     */
+    this.api.addRoutes({
+      path: '/webhooks/razorpay/{merchantId}',
+      methods: [apigw.HttpMethod.POST],
+      integration: new HttpLambdaIntegration('WebhookIntegration', buyerApi),
+    });
 
     this.api.addRoutes({
       path: '/buyer/{proxy+}',

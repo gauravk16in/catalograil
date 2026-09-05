@@ -475,6 +475,9 @@ importers:
       '@aws-sdk/lib-dynamodb':
         specifier: ^3.716.0
         version: 3.1125.0(@aws-sdk/client-dynamodb@3.1125.0)
+      '@catalograil/aws':
+        specifier: workspace:*
+        version: link:../../packages/aws
       '@catalograil/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -1010,6 +1013,9 @@ importers:
       '@types/aws-lambda':
         specifier: ^8.10.147
         version: 8.10.163
+      drizzle-orm:
+        specifier: ^0.38.4
+        version: 0.38.4(@types/react@19.2.18)(pg@8.23.0)(postgres@3.4.9)(react@19.2.8)
     devDependencies:
       '@catalograil/config':
         specifier: workspace:*
@@ -1066,6 +1072,31 @@ importers:
       eslint:
         specifier: ^9.17.0
         version: 9.39.5(jiti@1.21.7)(supports-color@7.2.0)
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.1)(supports-color@7.2.0)
+
+  services/workers/reservation-sweeper:
+    dependencies:
+      '@aws-lambda-powertools/logger':
+        specifier: ^2.11.0
+        version: 2.35.0
+      '@catalograil/core':
+        specifier: workspace:*
+        version: link:../../../packages/core
+      '@catalograil/db':
+        specifier: workspace:*
+        version: link:../../../packages/db
+      drizzle-orm:
+        specifier: ^0.38.2
+        version: 0.38.4(@types/react@19.2.18)(pg@8.23.0)(postgres@3.4.9)(react@19.2.8)
+    devDependencies:
+      postgres:
+        specifier: ^3.4.5
+        version: 3.4.9
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
