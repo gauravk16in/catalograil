@@ -17,7 +17,8 @@
     "aws-amplify": "^6.20.0",
     "next": "^15.1.3",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "thinking-orbs": "^0.3.1"
   },
   "devDependencies": {
     "@catalograil/config": "workspace:*",
