@@ -73,9 +73,33 @@ interface OrderResult {
   merchantId: string;
   merchantName: string;
   ok: boolean;
+  orderId?: string;
   orderNumber?: string;
+  razorpayOrderId?: string;
+  /** The merchant's publishable key. The widget cannot open without it. */
+  razorpayKeyId?: string;
   amountPaise?: string;
+  currency?: string;
   error?: string;
+}
+
+/**
+ * Razorpay's checkout script, loaded on demand.
+ *
+ * Not in the page head: it is only needed at the moment of payment, and a buyer who browses
+ * and leaves should not have paid for it. Loaded once and reused if they retry.
+ */
+async function loadRazorpay(): Promise<void> {
+  if (typeof window === 'undefined') return;
+  if ((window as { Razorpay?: unknown }).Razorpay) return;
+
+  await new Promise<void>((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Could not load the payment page.'));
+    document.body.appendChild(script);
+  });
 }
 
 const EMPTY_ADDRESS = {
@@ -196,12 +220,96 @@ function Checkout() {
         buyerPhone: shippingAddress.recipientPhone.trim(),
         shippingAddress,
       });
+
+      const payable = outcome.results.find((r) => r.ok && r.razorpayOrderId && r.razorpayKeyId);
+
+      /**
+       * The order exists but is not paid — so open Razorpay rather than showing a receipt.
+       *
+       * Stopping here was the bug: an order sat at `awaiting_payment`, the buyer saw a
+       * confirmation, and nobody had been charged. The merchant's own key opens their own
+       * checkout, so the money goes to them and never through us.
+       */
+      if (payable) {
+        await openRazorpay(payable, outcome.results);
+        return;
+      }
+
       setResults(outcome.results);
     } catch (err) {
       setError(describeError(err));
     } finally {
       setPaying(false);
     }
+  }
+
+  async function openRazorpay(order: OrderResult, all: OrderResult[]) {
+    await loadRazorpay();
+
+    const RazorpayCheckout = (window as unknown as { Razorpay: new (o: unknown) => { open(): void } })
+      .Razorpay;
+
+    const checkout = new RazorpayCheckout({
+      key: order.razorpayKeyId,
+      order_id: order.razorpayOrderId,
+      amount: Number(order.amountPaise ?? 0),
+      currency: order.currency ?? 'INR',
+      name: order.merchantName,
+      // Said inside the payment sheet too, because this is the moment the buyer is deciding.
+      description: `Paid directly to ${order.merchantName}`,
+      prefill: {
+        email: email.trim(),
+        contact: shippingAddress.recipientPhone.trim(),
+        name: shippingAddress.recipientName.trim(),
+      },
+      notes: { order_number: order.orderNumber ?? '' },
+      theme: { color: '#111827' },
+      handler: async (response: {
+        razorpay_payment_id: string;
+        razorpay_order_id: string;
+        razorpay_signature: string;
+      }) => {
+        /**
+         * Confirmed server-side before anything is shown as paid.
+         *
+         * The browser cannot be trusted to say a payment succeeded — the signature is
+         * verified against the merchant's key secret, which only the API holds.
+         */
+        try {
+          await api.post('/checkout/confirm', {
+            orderId: order.orderId,
+            razorpayPaymentId: response.razorpay_payment_id,
+            razorpayOrderId: response.razorpay_order_id,
+            razorpaySignature: response.razorpay_signature,
+          });
+          setResults(all.map((r) => (r.merchantId === order.merchantId ? { ...r, paid: true } : r)));
+        } catch (err) {
+          // The money has moved even if we could not record it, so the message must not
+          // suggest otherwise — and the webhook will reconcile it regardless.
+          setError(
+            `Your payment went through (${response.razorpay_payment_id}) but we could not ` +
+              `confirm it here. It will appear in your orders shortly. ${describeError(err)}`,
+          );
+        }
+      },
+      modal: {
+        ondismiss: () => {
+          /**
+           * Closing the sheet is not a failure, and not an order either.
+           *
+           * The stock stays reserved for twenty minutes and the sweeper releases it, so the
+           * honest message is that nothing has been charged and the link still works.
+           */
+          setPaying(false);
+          setError(
+            'Payment was not completed, so nothing has been charged. Your items are held for ' +
+              'twenty minutes if you want to try again.',
+          );
+        },
+      },
+    });
+
+    checkout.open();
   }
 
   if (loading) return <p className="py-16 text-center text-sm text-[hsl(var(--muted))]">Loading…</p>;
@@ -480,7 +588,7 @@ function Checkout() {
  * T2.21's partial failure. A two-merchant cart where the second payment fails must leave the
  * first order intact and offer a retry for the second alone — never roll back a success.
  */
-function Outcome({ results }: { results: OrderResult[] }) {
+function Outcome({ results }: { results: (OrderResult & { paid?: boolean })[] }) {
   const succeeded = results.filter((r) => r.ok);
   const failed = results.filter((r) => !r.ok);
 
@@ -490,7 +598,11 @@ function Outcome({ results }: { results: OrderResult[] }) {
         <Card>
           <div className="px-5 py-5">
             <h1 className="text-lg font-semibold">
-              {succeeded.length === 1 ? 'Your order is placed' : 'Your orders are placed'}
+              {succeeded.some((r) => (r as { paid?: boolean }).paid)
+                ? 'Payment received'
+                : succeeded.length === 1
+                  ? 'Your order is placed'
+                  : 'Your orders are placed'}
             </h1>
             <ul className="mt-3 space-y-2 text-sm">
               {succeeded.map((r) => (

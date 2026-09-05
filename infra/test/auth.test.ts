@@ -25,7 +25,54 @@ describe('auth stack (S2.1)', () => {
      * rather than unlikely.
      */
     template.resourceCountIs('AWS::Cognito::UserPool', 2);
-    template.resourceCountIs('AWS::Cognito::UserPoolClient', 2);
+    /**
+     * Three clients, not two: the merchant dashboard, the buyer dashboard, and the OAuth
+     * client Claude and ChatGPT use (T2.7). The third is on the *buyer* pool deliberately —
+     * an assistant acts for a buyer, and putting it on the merchant pool would let a
+     * connector reach a merchant's catalogue controls.
+     */
+    template.resourceCountIs('AWS::Cognito::UserPoolClient', 3);
+  });
+
+  it('gives the assistant client separately grantable scopes', () => {
+    /**
+     * A buyer connecting an assistant is agreeing to let it spend their money. "See your
+     * addresses" and "place orders as you" must not be one undifferentiated yes.
+     */
+    const servers = template.findResources('AWS::Cognito::UserPoolResourceServer');
+    const scopes = Object.values(servers).flatMap(
+      (r) => (r.Properties?.Scopes ?? []) as { ScopeName: string }[],
+    );
+    expect(scopes.map((s) => s.ScopeName).sort()).toEqual([
+      'addresses.read',
+      'orders.read',
+      'orders.write',
+    ]);
+  });
+
+  it('uses PKCE without a client secret, because an assistant cannot keep one', () => {
+    const clients = template.findResources('AWS::Cognito::UserPoolClient');
+    const mcp = Object.values(clients).find((c) =>
+      String(c.Properties?.ClientName ?? '').includes('-mcp'),
+    );
+    expect(mcp).toBeDefined();
+    expect(mcp!.Properties?.GenerateSecret ?? false).toBe(false);
+    expect(mcp!.Properties?.AllowedOAuthFlows).toEqual(['code']);
+  });
+
+  it('registers redirect URIs explicitly rather than by wildcard', () => {
+    // A redirect URI is the one place an authorization code can be sent; a loose entry is
+    // how a code ends up somewhere it should not.
+    const clients = template.findResources('AWS::Cognito::UserPoolClient');
+    const mcp = Object.values(clients).find((c) =>
+      String(c.Properties?.ClientName ?? '').includes('-mcp'),
+    );
+    const urls: string[] = mcp!.Properties?.CallbackURLs ?? [];
+    expect(urls.length).toBeGreaterThan(0);
+    for (const url of urls) {
+      expect(url).toMatch(/^https:\/\//);
+      expect(url).not.toContain('*');
+    }
   });
 
   it('issues no client secret, because a browser cannot keep one', () => {

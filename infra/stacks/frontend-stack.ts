@@ -24,6 +24,8 @@ export interface FrontendStackProps extends StackProps {
   readonly merchantUserPoolClientId?: string;
   readonly buyerUserPoolId?: string;
   readonly buyerUserPoolClientId?: string;
+  /** Shown on the buyer's "connect your assistant" page (T2.7). */
+  readonly mcpUrl?: string;
 }
 
 /**
@@ -95,6 +97,7 @@ export class FrontendStack extends Stack {
         ...(props.buyerUserPoolClientId
           ? { NEXT_PUBLIC_BUYER_USER_POOL_CLIENT_ID: props.buyerUserPoolClientId }
           : {}),
+        ...(props.mcpUrl ? { NEXT_PUBLIC_MCP_URL: props.mcpUrl } : {}),
       },
     });
 

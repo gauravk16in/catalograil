@@ -11,6 +11,25 @@ export interface CatalogPort {
   compare(input: { product_ids: string[] }): Promise<ComparisonResponse>;
   getPolicies(input: { merchant_id: string }): Promise<unknown>;
   createCheckout(input: CheckoutInput): Promise<unknown>;
+
+  /**
+   * T2.7 — acting for a buyer who has connected their account.
+   *
+   * Each takes the buyer's own access token and forwards it, rather than the MCP server's
+   * SigV4 credentials. That is the point: the API decides what this buyer may see from the
+   * token, so a bug in the tool layer cannot widen it.
+   */
+  myAddresses(token: string): Promise<unknown>;
+  myOrders(token: string, limit?: number): Promise<unknown>;
+  orderStatus(token: string, orderNumber: string): Promise<unknown>;
+  placeOrder(token: string, input: PlaceOrderInput): Promise<unknown>;
+}
+
+export interface PlaceOrderInput {
+  product_id: string;
+  variant_id?: string;
+  quantity?: number;
+  address_id?: string;
 }
 
 export interface SearchInput {

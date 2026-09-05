@@ -34,7 +34,16 @@ export interface MerchantOrderResult {
   readonly orderId?: string;
   readonly orderNumber?: string;
   readonly razorpayOrderId?: string;
+  /**
+   * The merchant's **publishable** key id, which the Razorpay widget needs to open.
+   *
+   * `rzp_test_…` / `rzp_live_…` is designed to be public — it identifies the account to
+   * Razorpay's own checkout script and authorises nothing on its own. The secret it pairs
+   * with never leaves the Lambda. Without this the browser has an order it cannot pay for.
+   */
+  readonly razorpayKeyId?: string;
   readonly amountPaise?: string;
+  readonly currency?: string;
   /** Present on failure, naming what the buyer or merchant can do about it. */
   readonly error?: string;
   readonly errorCode?: string;
@@ -304,7 +313,10 @@ async function createOneMerchantOrder(
       orderId: created!.id,
       orderNumber,
       razorpayOrderId: razorpayOrder.id,
+      razorpayKeyId:
+        client.connection.method === 'api_keys' ? client.connection.keyId : undefined,
       amountPaise: subtotal.toString(),
+      currency: razorpayOrder.currency,
     };
   } catch (err) {
     /**

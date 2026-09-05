@@ -122,6 +122,16 @@ export async function getOrder(
 
   return {
     ...order,
+    /**
+     * A deep link into the merchant's own Razorpay dashboard.
+     *
+     * Built here rather than in the UI because it is the merchant's *own* payment on their
+     * *own* account — the whole premise of the product — and the fastest way to make that
+     * concrete is a link that lands them on it. They can reconcile without us.
+     */
+    razorpayDashboardUrl: order.razorpayPaymentId
+      ? `https://dashboard.razorpay.com/app/payments/${order.razorpayPaymentId}`
+      : null,
     subtotalPaise: order.subtotalPaise?.toString() ?? null,
     shippingPaise: order.shippingPaise?.toString() ?? null,
     taxPaise: order.taxPaise?.toString() ?? null,
