@@ -333,6 +333,14 @@ export class ApiStack extends Stack {
       integration: new HttpLambdaIntegration('PublicSearchIntegration', internalApi),
     });
 
+    // Opening a product needs no account either: the listing already carries the price, the
+    // merchant and the delivery estimate, so gating the detail would be a half-measure.
+    this.api.addRoutes({
+      path: '/product',
+      methods: [apigw.HttpMethod.POST],
+      integration: new HttpLambdaIntegration('PublicProductIntegration', internalApi),
+    });
+
     /**
      * The buyer's own account, behind the buyer pool.
      *

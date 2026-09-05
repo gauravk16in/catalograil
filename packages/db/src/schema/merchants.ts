@@ -140,13 +140,33 @@ export const merchantPolicies = pgTable('merchant_policies', {
   merchantId: uuid('merchant_id')
     .primaryKey()
     .references(() => merchants.id, { onDelete: 'cascade' }),
-  /** Mandatory — a merchant cannot reach `active` without all three (T1.9). */
-  refundUrl: text('refund_url').notNull(),
-  termsUrl: text('terms_url').notNull(),
-  fulfillmentUrl: text('fulfillment_url').notNull(),
+  /**
+   * Nullable, because a merchant may paste their policies instead of publishing them.
+   *
+   * Most small Indian merchants sell through WhatsApp and Instagram and have no website to
+   * host a refund page on — requiring a URL excluded exactly the merchants this platform
+   * exists for. When a URL is given it is still fetched and re-checked weekly; when text is
+   * pasted, the text *is* the source.
+   */
+  refundUrl: text('refund_url'),
+  termsUrl: text('terms_url'),
+  fulfillmentUrl: text('fulfillment_url'),
+  /**
+   * The full policy text, whether pasted by the merchant or fetched from their page.
+   *
+   * Stored rather than only summarised so a buyer's question can be answered from what the
+   * merchant actually wrote. A summary answers "how long do I have to return this"; only the
+   * text answers "does that apply to sale items". Without it the model has to either refuse
+   * or invent, and inventing a policy term is the worst thing it can do here.
+   */
+  refundText: text('refund_text'),
+  termsText: text('terms_text'),
+  fulfillmentText: text('fulfillment_text'),
   refundSummary: text('refund_summary'),
   termsSummary: text('terms_summary'),
   fulfillmentSummary: text('fulfillment_summary'),
+  /** url | text — where the content above came from. */
+  source: text('source').default('url').notNull(),
   returnWindowDays: integer('return_window_days'),
   /** buyer | merchant | conditional */
   returnShippingBy: text('return_shipping_by'),

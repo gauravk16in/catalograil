@@ -1053,6 +1053,25 @@ const APPAREL: VariantSeed[] = [
   },
 ];
 
+/**
+ * Stable placeholder photographs for the seeded catalogue.
+ *
+ * The seed previously set no images at all, so every dev and demo environment showed a
+ * catalogue of products with nothing to look at — which reads as the product being broken
+ * rather than the data being synthetic. (The handful that did have images came from CSV
+ * import tests and pointed at `example.com`, which is reserved and never resolves.)
+ *
+ * Keyed by the product's own reference so an image is stable across re-seeds: a demo where
+ * the pictures shuffle on every run is worse than one with none.
+ */
+function seedImages(ref: string): string[] {
+  const seed = encodeURIComponent(ref);
+  return [
+    `https://picsum.photos/seed/${seed}/800/800`,
+    `https://picsum.photos/seed/${seed}-2/800/800`,
+  ];
+}
+
 export async function seed(db: PostgresJsDatabase): Promise<void> {
   console.log('Seeding…');
 
@@ -1257,6 +1276,7 @@ export async function seed(db: PostgresJsDatabase): Promise<void> {
           description: item.description,
           categoryId: CAT[item.category] ?? null,
           attributes: item.attributes,
+          images: seedImages(item.ref),
           status: 'active',
         })
         .onConflictDoUpdate({
@@ -1264,6 +1284,7 @@ export async function seed(db: PostgresJsDatabase): Promise<void> {
           set: {
             name: sql`excluded.name`,
             description: sql`excluded.description`,
+            images: sql`excluded.images`,
             updatedAt: new Date(),
           },
         })
@@ -1313,6 +1334,7 @@ export async function seed(db: PostgresJsDatabase): Promise<void> {
         description: item.description,
         categoryId: CAT[item.category] ?? null,
         attributes: item.attributes,
+        images: seedImages(item.ref),
         status: 'active',
       })
       .onConflictDoUpdate({
@@ -1320,6 +1342,9 @@ export async function seed(db: PostgresJsDatabase): Promise<void> {
         set: {
           name: sql`excluded.name`,
           description: sql`excluded.description`,
+          // Re-seeding an existing environment backfills the images too, which is the point:
+          // the catalogues already deployed have none.
+          images: sql`excluded.images`,
           updatedAt: new Date(),
         },
       })

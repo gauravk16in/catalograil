@@ -193,7 +193,7 @@ describe('api stack', () => {
      * already chosen what they want is the clearest way to lose them, so what authorises
      * these is the single-use handoff token checked inside the handler.
      */
-    const PUBLIC = ['/health', 'POST /search', '/webhooks/razorpay/', '/checkout/'];
+    const PUBLIC = ['/health', 'POST /search', 'POST /product', '/webhooks/razorpay/', '/checkout/'];
 
     for (const [id, route] of Object.entries(routes)) {
       const key = String(route.Properties?.RouteKey ?? '');

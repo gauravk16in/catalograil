@@ -60,7 +60,14 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
      * an assistant's first `get_product` after a `search_products` pays a second cold start
      * inside the same conversation turn.
      */
-    if (path.endsWith('/internal/product')) {
+    /**
+     * `POST /product` is public, the same as `/search`.
+     *
+     * A buyer browsing without an account needs to open a product, and gating detail while
+     * leaving search open would be an odd half-measure — the listing already carries the
+     * price, the merchant and the delivery estimate.
+     */
+    if (path === '/product' || path.endsWith('/internal/product')) {
       const body = event.body ? (JSON.parse(event.body) as { productId?: string }) : {};
       if (!body.productId) throw new AppError('VALIDATION_FAILED', 'productId is required.');
       return json(200, await getProductDetail(getDb(), body.productId));

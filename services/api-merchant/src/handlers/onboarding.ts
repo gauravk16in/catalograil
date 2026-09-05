@@ -292,11 +292,42 @@ export async function declareCapabilities(
 
 // ─── T1.9: policies ────────────────────────────────────────────────────────────────
 
-export const policiesSchema = z.object({
-  refundUrl: z.string().url(),
-  termsUrl: z.string().url(),
-  fulfillmentUrl: z.string().url(),
-});
+/**
+ * Policies arrive as URLs *or* as pasted text.
+ *
+ * Most small Indian merchants sell through WhatsApp and Instagram and have no website to
+ * host a refund page on. Requiring a URL excluded exactly the merchants this platform exists
+ * for, and pushed the rest into publishing a page they never look at again — which then goes
+ * stale and fails the weekly check.
+ *
+ * Pasted text is in some ways the better source: it is what the merchant actually means
+ * today, it cannot 404, and it needs no fetch before a buyer's question can be answered.
+ */
+export const policiesSchema = z
+  .object({
+    refundUrl: z.string().url().optional(),
+    termsUrl: z.string().url().optional(),
+    fulfillmentUrl: z.string().url().optional(),
+    // Long enough for a real policy, capped because the extractor truncates at 12k anyway.
+    refundText: z.string().trim().min(40).max(20_000).optional(),
+    termsText: z.string().trim().min(40).max(20_000).optional(),
+    fulfillmentText: z.string().trim().min(40).max(20_000).optional(),
+  })
+  .superRefine((value, ctx) => {
+    for (const kind of ['refund', 'terms', 'fulfillment'] as const) {
+      const hasUrl = Boolean(value[`${kind}Url` as const]);
+      const hasText = Boolean(value[`${kind}Text` as const]);
+      if (!hasUrl && !hasText) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [`${kind}Text`],
+          // Names both options, because a merchant who has neither needs to know a link is
+          // not the only way through.
+          message: `Give your ${kind} policy as a link or paste the text.`,
+        });
+      }
+    }
+  });
 
 export interface PolicySubmissionResult {
   readonly accepted: boolean;
@@ -328,31 +359,35 @@ export async function submitPolicies(
 ): Promise<PolicySubmissionResult> {
   const parsed = policiesSchema.safeParse(body);
   if (!parsed.success) {
-    throw new AppError('VALIDATION_FAILED', 'All three policy URLs are required.', {
+    throw new AppError('VALIDATION_FAILED', 'Each policy needs a link or some text.', {
       details: { issues: parsed.error.issues },
     });
   }
 
-  const targets: [PolicyKind, string][] = [
-    ['refund', parsed.data.refundUrl],
-    ['terms', parsed.data.termsUrl],
-    ['fulfillment', parsed.data.fulfillmentUrl],
-  ];
+  const input = parsed.data;
+  const kinds: PolicyKind[] = ['refund', 'terms', 'fulfillment'];
 
+  /**
+   * Pasted text short-circuits the fetch entirely.
+   *
+   * It is already the content, so fetching would be a round trip to confirm something we
+   * were handed — and a merchant who pasted their policy should not have their submission
+   * fail because an unrelated URL of theirs is down.
+   */
   const results = await Promise.all(
-    targets.map(([kind, url]) => deps.policyFetcher.fetch(kind, url)),
+    kinds.map(async (kind) => {
+      const text = input[`${kind}Text` as const];
+      if (text) {
+        return { kind, url: `pasted:${kind}`, status: 'ok' as const, text };
+      }
+      const url = input[`${kind}Url` as const]!;
+      return deps.policyFetcher.fetch(kind, url);
+    }),
   );
 
   if (!policiesAreComplete(results)) {
     const failures = describePolicyFailures(results);
-    await recordPolicyCheck(
-      deps,
-      merchantId,
-      parsed.data,
-      null,
-      results[0]?.status ?? 'unreachable',
-      true,
-    );
+    await recordPolicyCheck(deps, merchantId, input, results, null, results.find((r) => r.status !== 'ok')?.status ?? 'unreachable', true);
 
     throw new AppError('POLICY_URL_UNREACHABLE', 'One or more policy pages could not be read.', {
       details: { failures },
@@ -360,7 +395,7 @@ export async function submitPolicies(
   }
 
   const extracted = await deps.policyExtractor.extract(results);
-  await recordPolicyCheck(deps, merchantId, parsed.data, extracted, 'ok', false);
+  await recordPolicyCheck(deps, merchantId, input, results, extracted, 'ok', false);
 
   /**
    * Policies are one of two gates, not the last one.
@@ -387,16 +422,33 @@ export async function submitPolicies(
 async function recordPolicyCheck(
   deps: PolicyDeps,
   merchantId: string,
-  urls: z.infer<typeof policiesSchema>,
+  input: z.infer<typeof policiesSchema>,
+  fetched: readonly { kind: string; text?: string | undefined }[] | null,
   extracted: ExtractedPolicies | null,
   status: string,
   failed: boolean,
 ): Promise<void> {
+  /**
+   * The full text is stored whichever way it arrived.
+   *
+   * A summary answers "how long do I have to return this"; only the text answers "does that
+   * apply to sale items". Without it a model asked the second question can only refuse or
+   * invent, and inventing a policy term is the worst thing it can do here.
+   */
+  const textFor = (kind: string): string | null =>
+    fetched?.find((r) => r.kind === kind)?.text?.slice(0, 20_000) ?? null;
+
   const values = {
     merchantId,
-    refundUrl: urls.refundUrl,
-    termsUrl: urls.termsUrl,
-    fulfillmentUrl: urls.fulfillmentUrl,
+    refundUrl: input.refundUrl ?? null,
+    termsUrl: input.termsUrl ?? null,
+    fulfillmentUrl: input.fulfillmentUrl ?? null,
+    refundText: textFor('refund'),
+    termsText: textFor('terms'),
+    fulfillmentText: textFor('fulfillment'),
+    // Which way the merchant gave it, so the weekly checker knows whether there is a URL
+    // worth re-fetching at all.
+    source: input.refundText || input.termsText || input.fulfillmentText ? 'text' : 'url',
     refundSummary: extracted?.refundSummary ?? null,
     termsSummary: extracted?.termsSummary ?? null,
     fulfillmentSummary: extracted?.fulfillmentSummary ?? null,
