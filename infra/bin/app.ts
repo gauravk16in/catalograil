@@ -141,6 +141,7 @@ if (githubTokenSecretName) {
     buyerUserPoolId: auth.buyerPool.userPoolId,
     buyerUserPoolClientId: auth.buyerClient.userPoolClientId,
     mcpUrl: mcp.functionUrl.url,
+    buyerHostedUiDomain: auth.buyerDomain.baseUrl(),
     ...(process.env.GITHUB_BRANCH ? { branch: process.env.GITHUB_BRANCH } : {}),
   });
 }

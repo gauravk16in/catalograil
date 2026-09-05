@@ -1,6 +1,6 @@
 import { AppError } from '@catalograil/core';
-import { buyerAddresses, buyers, orders, type Database } from '@catalograil/db';
-import { and, desc, eq } from 'drizzle-orm';
+import { buyerAddresses, buyers, merchants, orderItems, orders, type Database } from '@catalograil/db';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 
 /**
@@ -217,8 +217,18 @@ export async function listBuyerOrders(
       status: orders.status,
       totalPaise: orders.totalPaise,
       createdAt: orders.createdAt,
+      /**
+       * Enough to make the list readable without opening anything.
+       *
+       * A page of order numbers and statuses is a database view, not an answer: the two
+       * questions someone actually has are "what was this?" and "who has my money?", and
+       * both were a click away from a screen that had room for them.
+       */
+      merchantName: merchants.businessName,
+      paymentLinkUrl: orders.paymentLinkUrl,
     })
     .from(orders)
+    .leftJoin(merchants, eq(merchants.id, orders.merchantId))
     /**
      * Matched on email when we have one, because guest checkout writes `buyer_email` with
      * no `buyer_id` — an order placed before signing up still belongs to the person who
@@ -228,11 +238,47 @@ export async function listBuyerOrders(
     .orderBy(desc(orders.createdAt))
     .limit(50);
 
+  /**
+   * One query for every order's lines, not one per order.
+   *
+   * Fifty orders would otherwise be fifty round trips through the proxy for a list view,
+   * which is the shape of slowness that only shows up once someone has been a customer for
+   * a while — the exact people whose page should not get worse.
+   */
+  const ids = rows.map((row) => row.id);
+  const lines = ids.length
+    ? await db
+        .select({
+          orderId: orderItems.orderId,
+          productId: orderItems.productId,
+          name: orderItems.nameSnapshot,
+          options: orderItems.optionsSnapshot,
+          quantity: orderItems.quantity,
+          lineTotalPaise: orderItems.lineTotalPaise,
+        })
+        .from(orderItems)
+        .where(inArray(orderItems.orderId, ids))
+    : [];
+
+  const byOrder = new Map<string, Record<string, unknown>[]>();
+  for (const line of lines) {
+    const list = byOrder.get(line.orderId) ?? [];
+    list.push({
+      productId: line.productId,
+      name: line.name,
+      options: line.options ?? {},
+      quantity: line.quantity,
+      lineTotalPaise: line.lineTotalPaise?.toString() ?? '0',
+    });
+    byOrder.set(line.orderId, list);
+  }
+
   return {
     orders: rows.map((row) => ({
       ...row,
       totalPaise: row.totalPaise?.toString() ?? '0',
       createdAt: row.createdAt.toISOString(),
+      items: byOrder.get(row.id) ?? [],
     })),
   };
 }

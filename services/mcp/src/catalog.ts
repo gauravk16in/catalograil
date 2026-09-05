@@ -192,7 +192,7 @@ export class HttpCatalog implements CatalogPort {
        * checkable against something other than our own word for it.
        */
       product_url: raw.productId
-        ? `${this.options.buyerAppUrl.replace(/\/$/, '')}/?product=${encodeURIComponent(String(raw.productId))}`
+        ? `${this.options.buyerAppUrl.replace(/\/$/, '')}/p/${encodeURIComponent(String(raw.productId))}`
         : null,
     };
   }

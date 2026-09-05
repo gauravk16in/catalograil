@@ -26,6 +26,13 @@ export interface FrontendStackProps extends StackProps {
   readonly buyerUserPoolClientId?: string;
   /** Shown on the buyer's "connect your assistant" page (T2.7). */
   readonly mcpUrl?: string;
+  /**
+   * Cognito's hosted UI, which the buyer app's `/authorize` page hands off to.
+   *
+   * That page is the authorization endpoint an assistant is told to open, so the app has to
+   * know where to forward the request — without it the connect flow ends on a dead button.
+   */
+  readonly buyerHostedUiDomain?: string;
 }
 
 /**
@@ -98,6 +105,9 @@ export class FrontendStack extends Stack {
           ? { NEXT_PUBLIC_BUYER_USER_POOL_CLIENT_ID: props.buyerUserPoolClientId }
           : {}),
         ...(props.mcpUrl ? { NEXT_PUBLIC_MCP_URL: props.mcpUrl } : {}),
+        ...(props.buyerHostedUiDomain
+          ? { NEXT_PUBLIC_COGNITO_HOSTED_UI: props.buyerHostedUiDomain }
+          : {}),
       },
     });
 
@@ -159,6 +169,20 @@ export class FrontendStack extends Stack {
         AMPLIFY_DIFF_DEPLOY: 'false',
       }).map(([name, value]) => ({ name, value })),
       customRules: [
+        /**
+         * `/p/<productId>` is one document with the id in the path.
+         *
+         * A static export has no server to match a dynamic segment, so without this rule
+         * every product link 404s into the shell and lands the buyer on the search page —
+         * which is what an assistant's product links did, and it reads as a broken
+         * recommendation even though the request technically succeeded. Ordered before the
+         * catch-all: rules are evaluated top down and the wildcard below would swallow it.
+         */
+        {
+          source: '/p/<*>',
+          target: '/p/index.html',
+          status: '200',
+        },
         /**
          * Client-side routing on static hosting. Next exports a file per route, so a direct
          * hit on /products resolves normally; this only catches paths the CDN genuinely

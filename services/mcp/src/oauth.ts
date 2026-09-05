@@ -26,6 +26,8 @@ export interface OAuthConfig {
   readonly issuer: string;
   readonly clientId: string;
   readonly hostedUiDomain: string;
+  /** The buyer dashboard, which hosts the page the authorization flow starts on. */
+  readonly buyerAppUrl: string;
   /** The MCP endpoint's own URL, which is the "resource" being protected. */
   readonly resourceUrl: string;
 }
@@ -58,7 +60,15 @@ export function authorizationServerMetadata(config: OAuthConfig): Record<string,
   const ui = config.hostedUiDomain.replace(/\/$/, '');
   return {
     issuer: config.issuer,
-    authorization_endpoint: `${ui}/oauth2/authorize`,
+    /**
+     * Conciergent's own page, which explains the request and then hands off to Cognito.
+     *
+     * Pointing this straight at the hosted UI sent buyers to an unfamiliar domain with an
+     * unexplained login box, moments before granting software permission to order in their
+     * name — the exact shape of a phishing page. The page passes every parameter through
+     * untouched; only the first screen changes.
+     */
+    authorization_endpoint: `${config.buyerAppUrl.replace(/\/$/, '')}/authorize`,
     token_endpoint: `${ui}/oauth2/token`,
     userinfo_endpoint: `${ui}/oauth2/userInfo`,
     revocation_endpoint: `${ui}/oauth2/revoke`,

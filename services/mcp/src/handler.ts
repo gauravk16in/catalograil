@@ -106,6 +106,7 @@ function oauth(event: APIGatewayProxyEventV2): {
     issuer: required('COGNITO_ISSUER'),
     clientId: required('COGNITO_MCP_CLIENT_ID'),
     hostedUiDomain: required('COGNITO_HOSTED_UI'),
+    buyerAppUrl: required('BUYER_APP_URL'),
     resourceUrl: `https://${host}`,
   };
   // Only the verifier is cached: it holds the fetched JWKS, which is the expensive part.
