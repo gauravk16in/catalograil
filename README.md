@@ -4,6 +4,14 @@
 
 ---
 
+## Live Experiences
+
+- **Landing page:** [Discover Conciergent](https://conciergent.vercel.app/)
+- **Buyer experience:** [Find the right product](https://main.d1ypcvqs4kcq44.amplifyapp.com/)
+- **Merchant dashboard:** [Manage inventory](https://main.d21osrv849o4of.amplifyapp.com/inventory)
+
+---
+
 ## Overview
 
 Most commerce discovery now starts with a question rather than a search box. People ask an
@@ -136,7 +144,6 @@ marketplaces that could put you there take a commission and stand between you an
 
 ### How Data Moves
 
-
 ```mermaid
 flowchart TB
     subgraph INGESTION["Merchant catalogue pipeline"]
@@ -174,7 +181,6 @@ flowchart TB
     class S3,PRODUCTS,UNITS data;
     class RESULTS result;
 ```
-
 
 Price and stock changes reach search in under a second through database triggers, and
 **never** trigger re-embedding — re-embedding happens only when the text that describes a
