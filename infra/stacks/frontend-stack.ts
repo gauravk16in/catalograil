@@ -180,7 +180,10 @@ export class FrontendStack extends Stack {
          */
         {
           source: '/p/<*>',
-          target: '/p/index.html',
+          // `/p.html`, not `/p/index.html`. A Next export without `trailingSlash` writes one
+          // file per route at the top level, so the directory form does not exist and the
+          // rewrite 404s into the very fallback it was added to bypass.
+          target: '/p.html',
           status: '200',
         },
         /**

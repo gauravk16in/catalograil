@@ -49,7 +49,14 @@ interface Detail {
 }
 
 export default function ProductPage() {
-  const [productId, setProductId] = useState<string | null>(null);
+  /**
+   * `undefined` until the path has been read, which is not the same as "no id".
+   *
+   * The document is prerendered with no URL, so starting at `null` renders "that link does
+   * not name a product" into the static HTML — a flash of a wrong answer before hydration
+   * gets to the real one.
+   */
+  const [productId, setProductId] = useState<string | null | undefined>(undefined);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [selected, setSelected] = useState<string>('');
   const [shot, setShot] = useState(0);
@@ -81,13 +88,10 @@ export default function ProductPage() {
       .catch((err) => setError(describeError(err)));
   }, [productId]);
 
-  if (!productId) {
-    return (
-      <Missing message="That link does not name a product." />
-    );
-  }
+  if (productId === undefined) return <Loading />;
+  if (!productId) return <Missing message="That link does not name a product." />;
   if (error) return <Missing message={error} />;
-  if (!detail) return <p className="py-16 text-sm text-[hsl(var(--muted))]">Loading…</p>;
+  if (!detail) return <Loading />;
 
   const variant = detail.variants.find((v) => v.id === selected) ?? null;
   const inStock = variant ? variant.availability === 'in_stock' : false;
@@ -239,6 +243,10 @@ export default function ProductPage() {
       )}
     </div>
   );
+}
+
+function Loading() {
+  return <p className="py-16 text-sm text-[hsl(var(--muted))]">Loading…</p>;
 }
 
 function Missing({ message }: { message: string }) {
