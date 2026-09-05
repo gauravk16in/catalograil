@@ -5,6 +5,7 @@ import { Suspense, useCallback, useEffect, useState } from 'react';
 import { api, describeError } from '../../lib/api';
 import { formatPaise } from '../../lib/format';
 import { Badge, Button, Card, ErrorNote, Field, inputClass } from '../../components/ui';
+import { useAuth } from '../../lib/auth';
 
 /**
  * T2.19–T2.22 — the split-screen checkout surface.
@@ -54,6 +55,20 @@ interface Product {
   } | null;
 }
 
+interface SavedAddress {
+  id: string;
+  label: string | null;
+  recipientName: string;
+  recipientPhone: string;
+  line1: string;
+  line2: string | null;
+  landmark: string | null;
+  city: string;
+  state: string;
+  pincode: string;
+  isDefault: boolean;
+}
+
 interface OrderResult {
   merchantId: string;
   merchantName: string;
@@ -84,7 +99,11 @@ const EMPTY_ADDRESS = {
  */
 function Checkout() {
   const token = useSearchParams().get('t') ?? '';
+  const { status } = useAuth();
   const [session, setSession] = useState<Session | null>(null);
+  const [saved, setSaved] = useState<SavedAddress[]>([]);
+  const [chosenAddressId, setChosenAddressId] = useState<string | null>(null);
+  const [enteringNew, setEnteringNew] = useState(false);
   const [product, setProduct] = useState<Product | null>(null);
   const [email, setEmail] = useState('');
   const [address, setAddress] = useState({ ...EMPTY_ADDRESS });
@@ -125,6 +144,46 @@ function Checkout() {
     void redeem();
   }, [redeem]);
 
+  /**
+   * A signed-in buyer never retypes what we already hold.
+   *
+   * Asking someone for an address they saved last week is the point at which a checkout
+   * stops feeling like it knows them, and it is the most common reason a ready buyer
+   * abandons — the friction arrives *after* they have decided, which is the worst place for
+   * it. The default address is preselected so the common case is one tap.
+   */
+  useEffect(() => {
+    if (status !== 'signedIn') return;
+
+    void Promise.all([
+      api.get<{ email: string | null; name: string | null }>('/buyer/me').catch(() => null),
+      api.get<{ addresses: SavedAddress[] }>('/buyer/addresses').catch(() => null),
+    ]).then(([profile, list]) => {
+      if (profile?.email) setEmail(profile.email);
+      const addresses = list?.addresses ?? [];
+      setSaved(addresses);
+      const preferred = addresses.find((a) => a.isDefault) ?? addresses[0];
+      if (preferred) setChosenAddressId(preferred.id);
+      // Only fall back to the form when there is genuinely nothing to choose from.
+      else setEnteringNew(true);
+    });
+  }, [status]);
+
+  /** The address being bought against: a saved one if chosen, otherwise the typed form. */
+  const chosen = saved.find((a) => a.id === chosenAddressId) ?? null;
+  const shippingAddress = chosen
+    ? {
+        recipientName: chosen.recipientName,
+        recipientPhone: chosen.recipientPhone,
+        line1: chosen.line1,
+        line2: chosen.line2 ?? '',
+        landmark: chosen.landmark ?? '',
+        city: chosen.city,
+        state: chosen.state,
+        pincode: chosen.pincode,
+      }
+    : address;
+
   async function pay(event: React.FormEvent) {
     event.preventDefault();
     if (!session) return;
@@ -134,8 +193,8 @@ function Checkout() {
       const outcome = await api.post<{ results: OrderResult[] }>('/checkout/pay', {
         sessionId: session.sessionId,
         buyerEmail: email.trim(),
-        buyerPhone: address.recipientPhone.trim(),
-        shippingAddress: address,
+        buyerPhone: shippingAddress.recipientPhone.trim(),
+        shippingAddress,
       });
       setResults(outcome.results);
     } catch (err) {
@@ -261,7 +320,14 @@ function Checkout() {
 
         <Card>
           <form onSubmit={pay} className="space-y-4 px-5 py-5">
-            <Field label="Email" hint="For your receipt and order updates.">
+            <Field
+              label="Email"
+              hint={
+                status === 'signedIn'
+                  ? 'From your account. Your receipt goes here.'
+                  : 'For your receipt and order updates.'
+              }
+            >
               <input
                 className={inputClass}
                 type="email"
@@ -269,59 +335,138 @@ function Checkout() {
                 onChange={(e) => setEmail(e.target.value)}
               />
             </Field>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Name">
-                <input
-                  className={inputClass}
-                  value={address.recipientName}
-                  onChange={(e) => setAddress({ ...address, recipientName: e.target.value })}
-                />
-              </Field>
-              <Field label="Phone">
-                <input
-                  className={inputClass}
-                  value={address.recipientPhone}
-                  onChange={(e) => setAddress({ ...address, recipientPhone: e.target.value })}
-                />
-              </Field>
-            </div>
-            <Field label="Address">
-              <input
-                className={inputClass}
-                value={address.line1}
-                onChange={(e) => setAddress({ ...address, line1: e.target.value })}
-              />
-            </Field>
-            <div className="grid gap-4 sm:grid-cols-3">
-              <Field label="City">
-                <input
-                  className={inputClass}
-                  value={address.city}
-                  onChange={(e) => setAddress({ ...address, city: e.target.value })}
-                />
-              </Field>
-              <Field label="State">
-                <input
-                  className={inputClass}
-                  value={address.state}
-                  onChange={(e) => setAddress({ ...address, state: e.target.value })}
-                />
-              </Field>
-              <Field label="PIN code">
-                <input
-                  className={inputClass}
-                  inputMode="numeric"
-                  value={address.pincode}
-                  onChange={(e) =>
-                    setAddress({ ...address, pincode: e.target.value.replace(/\D/g, '').slice(0, 6) })
-                  }
-                />
-              </Field>
-            </div>
 
-            {/* No account required (T2.21): asking someone who has already chosen to sign up
-                first is the clearest way to lose them. */}
-            <Button type="submit" disabled={paying || !email.trim() || !address.pincode}>
+            {/*
+              T2.21 — one tap for someone who has bought before.
+
+              Asking a signed-in buyer to retype an address they saved last week is the point
+              at which a checkout stops feeling like it knows them, and the friction lands
+              *after* they have decided, which is the worst place for it.
+            */}
+            {saved.length > 0 && !enteringNew && (
+              <div>
+                <p className="text-sm font-medium">Deliver to</p>
+                <div className="mt-2 space-y-2">
+                  {saved.map((a) => (
+                    <button
+                      key={a.id}
+                      type="button"
+                      onClick={() => setChosenAddressId(a.id)}
+                      className={`w-full rounded-lg border p-3 text-left text-sm ${
+                        chosenAddressId === a.id
+                          ? 'border-[hsl(var(--fg))] bg-[hsl(var(--accent-soft))]'
+                          : 'border-[hsl(var(--border))]'
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">{a.label || a.city}</span>
+                        {a.isDefault && <Badge tone="accent">Default</Badge>}
+                      </div>
+                      <p className="mt-0.5 text-[hsl(var(--muted))]">
+                        {a.recipientName} · {a.recipientPhone}
+                      </p>
+                      <p className="text-[hsl(var(--muted))]">
+                        {[a.line1, a.line2, a.landmark].filter(Boolean).join(', ')}, {a.city},{' '}
+                        {a.state} {a.pincode}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEnteringNew(true)}
+                  className="mt-2 text-sm underline"
+                >
+                  Send it somewhere else
+                </button>
+              </div>
+            )}
+
+            {(saved.length === 0 || enteringNew) && (
+              <>
+                {saved.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setEnteringNew(false)}
+                    className="text-sm underline"
+                  >
+                    Use a saved address instead
+                  </button>
+                )}
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Name">
+                    <input
+                      className={inputClass}
+                      value={address.recipientName}
+                      onChange={(e) => setAddress({ ...address, recipientName: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="Phone">
+                    <input
+                      className={inputClass}
+                      value={address.recipientPhone}
+                      onChange={(e) => setAddress({ ...address, recipientPhone: e.target.value })}
+                    />
+                  </Field>
+                </div>
+                <Field label="Address">
+                  <input
+                    className={inputClass}
+                    value={address.line1}
+                    onChange={(e) => setAddress({ ...address, line1: e.target.value })}
+                  />
+                </Field>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <Field label="City">
+                    <input
+                      className={inputClass}
+                      value={address.city}
+                      onChange={(e) => setAddress({ ...address, city: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="State">
+                    <input
+                      className={inputClass}
+                      value={address.state}
+                      onChange={(e) => setAddress({ ...address, state: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="PIN code">
+                    <input
+                      className={inputClass}
+                      inputMode="numeric"
+                      value={address.pincode}
+                      onChange={(e) =>
+                        setAddress({
+                          ...address,
+                          pincode: e.target.value.replace(/\D/g, '').slice(0, 6),
+                        })
+                      }
+                    />
+                  </Field>
+                </div>
+              </>
+            )}
+
+            {/*
+              Guest checkout stays available (T2.21). Someone who has already chosen what
+              they want should not be asked to create an account first — but a signed-out
+              buyer with an account is offered the shortcut rather than left to type.
+            */}
+            {status === 'signedOut' && (
+              <p className="text-xs text-[hsl(var(--muted))]">
+                Buying as a guest.{' '}
+                <a href="/login" className="underline">
+                  Sign in
+                </a>{' '}
+                to use a saved address — you will come back here.
+              </p>
+            )}
+
+            <Button
+              type="submit"
+              disabled={paying || !email.trim() || !shippingAddress.pincode}
+            >
               {paying ? 'Creating your order…' : `Pay ${formatPaise(total.toString())}`}
             </Button>
           </form>
