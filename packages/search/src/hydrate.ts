@@ -1,5 +1,5 @@
 import type { Sql } from 'postgres';
-import { NEW_MERCHANT_ORDER_THRESHOLD, formatPaise, type TrustSignals } from '@catalograil/core';
+import { NEW_MERCHANT_ORDER_THRESHOLD, formatPaise, toDate, type TrustSignals } from '@catalograil/core';
 
 /**
  * Turns ranked unit ids into rows a caller can display (T1.19).
@@ -131,7 +131,7 @@ function mapRow(row: HydratedRow): HydratedUnit {
      * for every search. A boundary that hands the domain a `Date` in its type should hand
      * it a real one.
      */
-    updatedAt: row.updated_at instanceof Date ? row.updated_at : new Date(row.updated_at),
+    updatedAt: toDate(row.updated_at),
     merchantId: row.merchant_id,
     merchantName: row.merchant_name,
     merchantCity: row.merchant_city,

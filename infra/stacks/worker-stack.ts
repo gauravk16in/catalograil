@@ -1,6 +1,8 @@
 import * as path from 'node:path';
 import { Duration, Stack, type StackProps } from 'aws-cdk-lib';
 import type * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import type * as lambda from 'aws-cdk-lib/aws-lambda';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
@@ -198,6 +200,32 @@ export class WorkerStack extends Stack {
       if (id === 'MerchantPostConfirmation') this.merchantPostConfirmation = fn;
       else this.buyerPostConfirmation = fn;
     }
+
+    /**
+     * T2.17 — the reservation sweeper, on a five-minute schedule.
+     *
+     * Stock is reserved before payment (T2.15), which is correct: a buyer must never be
+     * able to pay for something already sold. The cost is that an abandoned checkout holds
+     * stock, and without this a merchant's last unit becomes unbuyable because someone
+     * opened a payment page and closed the tab.
+     */
+    const sweeper = createFunction(this, 'ReservationSweeper', {
+      config,
+      entry: path.join(REPO_ROOT, 'services/workers/reservation-sweeper/src/handler.ts'),
+      vpc,
+      securityGroups: [props.lambdaSecurityGroup],
+      timeout: Duration.minutes(2),
+      memorySize: 512,
+      environment: databaseEnvironment(props.proxy.endpoint),
+    });
+
+    grantDatabase(props.proxy, sweeper);
+
+    new events.Rule(this, 'ReservationSweepSchedule', {
+      schedule: events.Schedule.rate(Duration.minutes(5)),
+      targets: [new targets.LambdaFunction(sweeper)],
+      description: 'Releases stock reserved by checkouts that were never paid (T2.17).',
+    });
 
     // ── Migration (operational, not a queue consumer) ───────────────────────────
     /**

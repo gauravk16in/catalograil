@@ -44,7 +44,15 @@ export const searchRequestSchema = z
      */
     minSemanticSimilarity: z.number().min(0).max(1).optional(),
     /** Recorded in the search log so ranking can later be analysed by surface. */
-    source: z.enum(['claude', 'chatgpt', 'web', 'dashboard', 'test']).default('web'),
+    /**
+     * Where the search came from, for the T1.20 logs.
+     *
+     * `mcp` is its own value rather than being folded into `claude`, because the server
+     * cannot tell which assistant is calling it — the transport carries no such signal —
+     * and recording a guess would make the analytics confidently wrong about which surface
+     * drives demand.
+     */
+    source: z.enum(['claude', 'chatgpt', 'mcp', 'web', 'dashboard', 'test']).default('web'),
     sessionId: z.string().max(200).optional(),
   })
   .strict()

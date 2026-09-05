@@ -21,17 +21,18 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@catalograil/core": "workspace:*",
-    "@catalograil/db": "workspace:*",
-    "@catalograil/search": "workspace:*",
-    "@catalograil/embeddings": "workspace:*",
-    "@aws-sdk/client-dynamodb": "^3.716.0",
-    "@aws-sdk/lib-dynamodb": "^3.716.0",
     "@aws-lambda-powertools/logger": "^2.12.0",
     "@aws-lambda-powertools/metrics": "^2.12.0",
     "@aws-lambda-powertools/tracer": "^2.12.0",
-    "@types/aws-lambda": "^8.10.147",
-    "@catalograil/aws": "workspace:*"
+    "@aws-sdk/client-dynamodb": "^3.716.0",
+    "@aws-sdk/lib-dynamodb": "^3.716.0",
+    "@catalograil/aws": "workspace:*",
+    "@catalograil/core": "workspace:*",
+    "@catalograil/db": "workspace:*",
+    "@catalograil/embeddings": "workspace:*",
+    "@catalograil/search": "workspace:*",
+    "@catalograil/trust": "workspace:*",
+    "@types/aws-lambda": "^8.10.147"
   },
   "devDependencies": {
     "@catalograil/config": "workspace:*",

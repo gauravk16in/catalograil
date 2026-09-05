@@ -60,6 +60,8 @@ function defaultHttpStatus(code: ErrorCode): number {
       return 400;
     case 'UNAUTHENTICATED':
     case 'INVALID_OAUTH_STATE':
+    case 'INVALID_HANDOFF_TOKEN':
+    case 'HANDOFF_TOKEN_EXPIRED':
       return 401;
     case 'FORBIDDEN':
     case 'PAYMENT_CONFIG_MISSING':
@@ -74,6 +76,8 @@ function defaultHttpStatus(code: ErrorCode): number {
     case 'OUT_OF_STOCK':
     case 'PRICE_CHANGED':
     case 'ACCOUNT_NOT_LINKED':
+    case 'INSUFFICIENT_STOCK':
+    case 'PRICE_MOVED':
       return 409;
     case 'RATE_LIMITED':
       return 429;
@@ -91,6 +95,7 @@ function defaultRetryable(code: ErrorCode): boolean {
     case 'RATE_LIMITED':
     case 'ADAPTER_TIMEOUT':
     case 'DEPENDENCY_UNAVAILABLE':
+    case 'PAYMENT_CREATE_FAILED':
     case 'INTERNAL_ERROR':
     case 'EMBEDDING_FAILED':
     case 'QUERY_EMBEDDING_FAILED':

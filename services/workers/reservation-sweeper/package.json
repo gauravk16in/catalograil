@@ -1,0 +1,25 @@
+{
+  "name": "@catalograil/worker-reservation-sweeper",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/handler.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@aws-lambda-powertools/logger": "^2.11.0",
+    "@catalograil/core": "workspace:*",
+    "@catalograil/db": "workspace:*",
+    "drizzle-orm": "^0.38.2"
+  },
+  "devDependencies": {
+    "postgres": "^3.4.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

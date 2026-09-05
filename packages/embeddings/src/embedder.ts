@@ -337,21 +337,51 @@ export async function embedImageCached(
   url: string,
   deps: { embedder: Embedder; fetcher: ImageFetcher; cache: EmbeddingCache },
 ): Promise<number[] | null> {
-  const key = imageCacheKey(url);
+  /**
+   * Two keys, for two different repeats (T2.9).
+   *
+   * **By URL**, which is the fast path: an assistant passes the same `image_url` across
+   * every turn of a conversation, and hitting this skips both the fetch and the Bedrock
+   * call. It is the case the spec's "buyers re-ask about the same photo constantly"
+   * describes.
+   *
+   * **By content hash**, which is the correct one: the same photo re-uploaded gets a new
+   * URL every time — a signed S3 link, a CDN path with a cache-buster — and URL-keying
+   * alone would embed identical bytes over and over. The fetch still happens, but the
+   * expensive half does not.
+   */
+  const urlKey = imageCacheKey(url);
 
-  const cached = await deps.cache.get(key);
-  if (cached !== undefined) return cached;
+  const byUrl = await deps.cache.get(urlKey);
+  if (byUrl !== undefined) return byUrl;
 
   const image = await deps.fetcher.fetch(url);
-  let vector: number[] | null = null;
-  if (image) {
-    try {
-      vector = await deps.embedder.embedImage(image);
-    } catch {
-      vector = null;
-    }
+  if (!image) {
+    // A negative result is cached too: a broken image URL in a conversation gets retried on
+    // every turn otherwise, and each retry costs the full fetch timeout.
+    await deps.cache.set(urlKey, null);
+    return null;
   }
 
-  await deps.cache.set(key, vector);
+  const contentKey = `img:sha:${createHash('sha256').update(image.bytes).digest('hex')}`;
+  const byContent = await deps.cache.get(contentKey);
+  if (byContent !== undefined) {
+    // Point this URL at the same answer so the next turn skips the fetch as well.
+    await deps.cache.set(urlKey, byContent);
+    return byContent;
+  }
+
+  let vector: number[] | null = null;
+  try {
+    vector = await deps.embedder.embedImage(image);
+  } catch {
+    // An embedding failure must not fail the search: a text query alongside it is still
+    // worth answering, and the caller sees fewer channels rather than an error.
+    vector = null;
+  }
+
+  await deps.cache.set(contentKey, vector);
+  await deps.cache.set(urlKey, vector);
   return vector;
 }
+

@@ -26,6 +26,7 @@
     "@aws-lambda-powertools/tracer": "^2.12.0",
     "@aws-sdk/client-dynamodb": "^3.716.0",
     "@aws-sdk/lib-dynamodb": "^3.716.0",
+    "@catalograil/aws": "workspace:*",
     "@catalograil/core": "workspace:*",
     "@catalograil/db": "workspace:*",
     "@catalograil/razorpay": "workspace:*",
@@ -37,8 +38,8 @@
     "@catalograil/config": "workspace:*",
     "@types/node": "^22.10.2",
     "eslint": "^9.17.0",
+    "postgres": "^3.4.5",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8",
-    "postgres": "^3.4.5"
+    "vitest": "^2.1.8"
   }
 }

@@ -1,0 +1,394 @@
+'use client';
+
+import { useSearchParams } from 'next/navigation';
+import { Suspense, useCallback, useEffect, useState } from 'react';
+import { api, describeError } from '../../lib/api';
+import { formatPaise } from '../../lib/format';
+import { Badge, Button, Card, ErrorNote, Field, inputClass } from '../../components/ui';
+
+/**
+ * T2.19–T2.22 — the split-screen checkout surface.
+ *
+ * A buyer arrives here from a conversation, mid-decision. Two things follow from that and
+ * shape the whole page:
+ *
+ * **They have already explained themselves.** The handoff context carries their original
+ * question and the shortlist that produced this product, and it is shown back to them —
+ * being asked "what are you looking for?" one screen after answering it is the moment a
+ * handoff stops feeling like one product.
+ *
+ * **They have not agreed to anything yet.** So the page leads with what they are buying and
+ * from whom, and says plainly that the money goes to the merchant. That notice is required
+ * on every checkout (T2.22) and it is also the single most surprising true thing about this
+ * product.
+ */
+
+interface CartItem {
+  productId: string;
+  variantId?: string;
+  quantity: number;
+  merchantId: string;
+  priceSnapshot: string;
+}
+
+interface Session {
+  sessionId: string;
+  expiresAt: string;
+  cart: CartItem[];
+  handoffContext: { originalQuery?: string; conversationSummary?: string; shortlist?: string[] };
+  guestContact?: { email?: string };
+}
+
+interface Product {
+  id: string;
+  name: string;
+  brand: string | null;
+  description: string | null;
+  images: string[];
+  variants: { id: string; options: Record<string, string>; price_paise: string | null; availability: string }[];
+  merchant: { id: string; name: string; trust: { score: number; new_merchant: boolean; signals: string[] } };
+  policies?: {
+    refund?: { summary: string | null; url: string };
+    return_window_days: number | null;
+    dispatch_sla_hours: number | null;
+  } | null;
+}
+
+interface OrderResult {
+  merchantId: string;
+  merchantName: string;
+  ok: boolean;
+  orderNumber?: string;
+  amountPaise?: string;
+  error?: string;
+}
+
+const EMPTY_ADDRESS = {
+  recipientName: '',
+  recipientPhone: '',
+  line1: '',
+  city: '',
+  state: '',
+  pincode: '',
+};
+
+/**
+ * The token travels as a query parameter, not a path segment.
+ *
+ * The doc specifies `/s/[token]`, and a dynamic segment cannot be statically exported —
+ * Next needs every value enumerated at build time through `generateStaticParams`, and
+ * handoff tokens are unbounded by construction. The alternatives were to give this app a
+ * Node runtime for one route, or to move the token into the query string. The second costs
+ * nothing: it is the same length, the same single-use credential, and it expires in fifteen
+ * minutes either way.
+ */
+function Checkout() {
+  const token = useSearchParams().get('t') ?? '';
+  const [session, setSession] = useState<Session | null>(null);
+  const [product, setProduct] = useState<Product | null>(null);
+  const [email, setEmail] = useState('');
+  const [address, setAddress] = useState({ ...EMPTY_ADDRESS });
+  const [results, setResults] = useState<OrderResult[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [paying, setPaying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [expired, setExpired] = useState(false);
+
+  const redeem = useCallback(async () => {
+    try {
+      /**
+       * The token is exchanged once, on load, and is dead afterwards (T2.14).
+       *
+       * It stays in the URL bar, the browser history and the chat transcript — so the only
+       * thing that keeps it from being a resumable session for anyone with the scrollback
+       * is that the second exchange fails.
+       */
+      const redeemed = await api.post<Session>('/checkout/redeem', { token });
+      setSession(redeemed);
+      if (redeemed.guestContact?.email) setEmail(redeemed.guestContact.email);
+
+      const first = redeemed.cart[0];
+      if (first) {
+        setProduct(await api.post<Product>('/search', { productDetail: first.productId }).catch(() => null) as never);
+      }
+    } catch (err) {
+      const code = (err as { body?: { code?: string } }).body?.code;
+      // Expiry is not the buyer's fault and does not get an error screen.
+      if (code === 'HANDOFF_TOKEN_EXPIRED' || code === 'INVALID_HANDOFF_TOKEN') setExpired(true);
+      else setError(describeError(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    void redeem();
+  }, [redeem]);
+
+  async function pay(event: React.FormEvent) {
+    event.preventDefault();
+    if (!session) return;
+    setPaying(true);
+    setError(null);
+    try {
+      const outcome = await api.post<{ results: OrderResult[] }>('/checkout/pay', {
+        sessionId: session.sessionId,
+        buyerEmail: email.trim(),
+        buyerPhone: address.recipientPhone.trim(),
+        shippingAddress: address,
+      });
+      setResults(outcome.results);
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setPaying(false);
+    }
+  }
+
+  if (loading) return <p className="py-16 text-center text-sm text-[hsl(var(--muted))]">Loading…</p>;
+
+  if (expired) {
+    return (
+      <div className="mx-auto max-w-md py-16 text-center">
+        <h1 className="text-lg font-semibold">This link has expired</h1>
+        <p className="mt-2 text-sm text-[hsl(var(--muted))]">
+          Checkout links last fifteen minutes and open once. Ask the assistant for a new one and
+          you will be back here in a moment — nothing has been charged.
+        </p>
+      </div>
+    );
+  }
+
+  const total = (session?.cart ?? []).reduce(
+    (sum, item) => sum + BigInt(item.priceSnapshot) * BigInt(item.quantity),
+    0n,
+  );
+
+  if (results) return <Outcome results={results} />;
+
+  return (
+    /* Desktop: product left at 60%, checkout right at 40%. Mobile: stacked, product first. */
+    <div className="grid gap-6 lg:grid-cols-[3fr_2fr]">
+      <div className="space-y-4">
+        {session?.handoffContext.originalQuery && (
+          <Card>
+            <div className="px-5 py-4 text-sm">
+              <p className="text-[hsl(var(--muted))]">You asked for</p>
+              <p className="mt-1 font-medium">“{session.handoffContext.originalQuery}”</p>
+              {session.handoffContext.conversationSummary && (
+                <p className="mt-2 text-[hsl(var(--muted))]">
+                  {session.handoffContext.conversationSummary}
+                </p>
+              )}
+            </div>
+          </Card>
+        )}
+
+        <Card>
+          <div className="space-y-3 px-5 py-5">
+            {product?.images?.[0] && (
+              /* A plain <img>: merchant images are arbitrary external URLs, and next/image
+                 would need every merchant domain allow-listed in advance. */
+              <img
+                src={product.images[0]}
+                alt={product.name}
+                className="aspect-square w-full rounded-lg object-cover"
+              />
+            )}
+            <div>
+              <h1 className="text-lg font-semibold tracking-tight">
+                {product?.name ?? 'Your item'}
+              </h1>
+              {product?.brand && (
+                <p className="text-sm text-[hsl(var(--muted))]">{product.brand}</p>
+              )}
+            </div>
+            <p className="text-xl font-semibold tabular-nums">{formatPaise(total.toString())}</p>
+            {product?.description && (
+              <p className="text-sm text-[hsl(var(--muted))]">{product.description}</p>
+            )}
+
+            {product?.merchant && (
+              <div className="border-t border-[hsl(var(--border))] pt-3">
+                <p className="text-sm font-medium">{product.merchant.name}</p>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {product.merchant.trust.signals.map((signal) => (
+                    <Badge key={signal} tone="neutral">
+                      {signal}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {product?.policies && (
+              <div className="border-t border-[hsl(var(--border))] pt-3 text-sm text-[hsl(var(--muted))]">
+                {product.policies.return_window_days != null && (
+                  <p>{product.policies.return_window_days}-day returns.</p>
+                )}
+                {product.policies.dispatch_sla_hours != null && (
+                  <p>Dispatched within {product.policies.dispatch_sla_hours} hours.</p>
+                )}
+                {product.policies.refund?.url && (
+                  <a href={product.policies.refund.url} className="underline" target="_blank" rel="noreferrer">
+                    Read their full refund policy
+                  </a>
+                )}
+              </div>
+            )}
+          </div>
+        </Card>
+      </div>
+
+      <div className="space-y-4">
+        {/*
+          T2.22, and unmissable by design. It is the most surprising true thing about this
+          product and the thing a buyer most needs to understand before entering a card.
+        */}
+        <Card className="border-[hsl(var(--fg))]">
+          <div className="px-5 py-4">
+            <p className="text-sm font-medium">
+              You are paying {product?.merchant.name ?? 'this merchant'} directly.
+            </p>
+            <p className="mt-1 text-sm text-[hsl(var(--muted))]">
+              The money goes straight into their own Razorpay account. We never hold it and take
+              no commission.
+            </p>
+          </div>
+        </Card>
+
+        {error && <ErrorNote>{error}</ErrorNote>}
+
+        <Card>
+          <form onSubmit={pay} className="space-y-4 px-5 py-5">
+            <Field label="Email" hint="For your receipt and order updates.">
+              <input
+                className={inputClass}
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </Field>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Name">
+                <input
+                  className={inputClass}
+                  value={address.recipientName}
+                  onChange={(e) => setAddress({ ...address, recipientName: e.target.value })}
+                />
+              </Field>
+              <Field label="Phone">
+                <input
+                  className={inputClass}
+                  value={address.recipientPhone}
+                  onChange={(e) => setAddress({ ...address, recipientPhone: e.target.value })}
+                />
+              </Field>
+            </div>
+            <Field label="Address">
+              <input
+                className={inputClass}
+                value={address.line1}
+                onChange={(e) => setAddress({ ...address, line1: e.target.value })}
+              />
+            </Field>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <Field label="City">
+                <input
+                  className={inputClass}
+                  value={address.city}
+                  onChange={(e) => setAddress({ ...address, city: e.target.value })}
+                />
+              </Field>
+              <Field label="State">
+                <input
+                  className={inputClass}
+                  value={address.state}
+                  onChange={(e) => setAddress({ ...address, state: e.target.value })}
+                />
+              </Field>
+              <Field label="PIN code">
+                <input
+                  className={inputClass}
+                  inputMode="numeric"
+                  value={address.pincode}
+                  onChange={(e) =>
+                    setAddress({ ...address, pincode: e.target.value.replace(/\D/g, '').slice(0, 6) })
+                  }
+                />
+              </Field>
+            </div>
+
+            {/* No account required (T2.21): asking someone who has already chosen to sign up
+                first is the clearest way to lose them. */}
+            <Button type="submit" disabled={paying || !email.trim() || !address.pincode}>
+              {paying ? 'Creating your order…' : `Pay ${formatPaise(total.toString())}`}
+            </Button>
+          </form>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * T2.21's partial failure. A two-merchant cart where the second payment fails must leave the
+ * first order intact and offer a retry for the second alone — never roll back a success.
+ */
+function Outcome({ results }: { results: OrderResult[] }) {
+  const succeeded = results.filter((r) => r.ok);
+  const failed = results.filter((r) => !r.ok);
+
+  return (
+    <div className="mx-auto max-w-lg space-y-4 py-8">
+      {succeeded.length > 0 && (
+        <Card>
+          <div className="px-5 py-5">
+            <h1 className="text-lg font-semibold">
+              {succeeded.length === 1 ? 'Your order is placed' : 'Your orders are placed'}
+            </h1>
+            <ul className="mt-3 space-y-2 text-sm">
+              {succeeded.map((r) => (
+                <li key={r.merchantId} className="flex justify-between gap-4">
+                  <span>
+                    {r.merchantName}{' '}
+                    <span className="font-mono text-xs text-[hsl(var(--muted))]">
+                      {r.orderNumber}
+                    </span>
+                  </span>
+                  <span className="tabular-nums">{formatPaise(r.amountPaise ?? '0')}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-3 text-sm text-[hsl(var(--muted))]">
+              Each merchant has been notified and will confirm shortly.
+            </p>
+          </div>
+        </Card>
+      )}
+
+      {failed.map((r) => (
+        <Card key={r.merchantId} className="border-[hsl(var(--danger))]">
+          <div className="px-5 py-5 text-sm">
+            <p className="font-medium">{r.merchantName} could not be completed</p>
+            <p className="mt-1 text-[hsl(var(--muted))]">{r.error}</p>
+            {succeeded.length > 0 && (
+              <p className="mt-2 text-[hsl(var(--muted))]">
+                Your other order is unaffected and has been placed.
+              </p>
+            )}
+          </div>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+export default function CheckoutPage() {
+  // `useSearchParams` needs a Suspense boundary in a statically exported app.
+  return (
+    <Suspense fallback={<p className="py-16 text-center text-sm">Loading…</p>}>
+      <Checkout />
+    </Suspense>
+  );
+}

@@ -475,6 +475,9 @@ importers:
       '@aws-sdk/lib-dynamodb':
         specifier: ^3.716.0
         version: 3.1125.0(@aws-sdk/client-dynamodb@3.1125.0)
+      '@catalograil/aws':
+        specifier: workspace:*
+        version: link:../../packages/aws
       '@catalograil/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -545,6 +548,9 @@ importers:
       '@catalograil/search':
         specifier: workspace:*
         version: link:../../packages/search
+      '@catalograil/trust':
+        specifier: workspace:*
+        version: link:../../packages/trust
       '@types/aws-lambda':
         specifier: ^8.10.147
         version: 8.10.163
@@ -634,8 +640,11 @@ importers:
 
   services/mcp:
     dependencies:
+      '@aws-crypto/sha256-js':
+        specifier: ^5.2.0
+        version: 5.2.0
       '@aws-lambda-powertools/logger':
-        specifier: ^2.12.0
+        specifier: ^2.35.0
         version: 2.35.0
       '@aws-lambda-powertools/metrics':
         specifier: ^2.12.0
@@ -643,15 +652,27 @@ importers:
       '@aws-lambda-powertools/tracer':
         specifier: ^2.12.0
         version: 2.35.0
+      '@aws-sdk/credential-providers':
+        specifier: ^3.1126.0
+        version: 3.1126.0
+      '@catalograil/aws':
+        specifier: workspace:*
+        version: link:../../packages/aws
       '@catalograil/core':
         specifier: workspace:*
         version: link:../../packages/core
       '@modelcontextprotocol/sdk':
-        specifier: ^1.12.0
-        version: 1.30.0(supports-color@7.2.0)(zod@3.25.76)
+        specifier: ^1.30.0
+        version: 1.30.0(supports-color@7.2.0)(zod@4.5.4)
+      '@smithy/signature-v4':
+        specifier: ^5.7.3
+        version: 5.7.3
       '@types/aws-lambda':
-        specifier: ^8.10.147
+        specifier: ^8.10.163
         version: 8.10.163
+      zod:
+        specifier: ^4.5.4
+        version: 4.5.4
     devDependencies:
       '@catalograil/config':
         specifier: workspace:*
@@ -992,6 +1013,9 @@ importers:
       '@types/aws-lambda':
         specifier: ^8.10.147
         version: 8.10.163
+      drizzle-orm:
+        specifier: ^0.38.4
+        version: 0.38.4(@types/react@19.2.18)(pg@8.23.0)(postgres@3.4.9)(react@19.2.8)
     devDependencies:
       '@catalograil/config':
         specifier: workspace:*
@@ -1048,6 +1072,31 @@ importers:
       eslint:
         specifier: ^9.17.0
         version: 9.39.5(jiti@1.21.7)(supports-color@7.2.0)
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.1)(supports-color@7.2.0)
+
+  services/workers/reservation-sweeper:
+    dependencies:
+      '@aws-lambda-powertools/logger':
+        specifier: ^2.11.0
+        version: 2.35.0
+      '@catalograil/core':
+        specifier: workspace:*
+        version: link:../../../packages/core
+      '@catalograil/db':
+        specifier: workspace:*
+        version: link:../../../packages/db
+      drizzle-orm:
+        specifier: ^0.38.2
+        version: 0.38.4(@types/react@19.2.18)(pg@8.23.0)(postgres@3.4.9)(react@19.2.8)
+    devDependencies:
+      postgres:
+        specifier: ^3.4.5
+        version: 3.4.9
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
@@ -1323,6 +1372,10 @@ packages:
 
   '@aws-sdk/credential-providers@3.1125.0':
     resolution: {integrity: sha512-bte6DvxakUKM0NhGF8/KtaS71viIXDnpCk2h/xXU5JnptA28k/ZiTf2gslPM6l21uaAWznh89IraXsSWm76LEA==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/credential-providers@3.1126.0':
+    resolution: {integrity: sha512-OWu4fqH48e6yUceFs1r0fgC88gpuD/MaFggKoRXXTrjT2VicQQSO9tqlCWd2qmQNAXbwfV8/HGeRm6l9P4FSRA==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/dynamodb-codec@3.973.44':
@@ -4376,6 +4429,9 @@ packages:
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
 
+  zod@4.5.4:
+    resolution: {integrity: sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA==}
+
 snapshots:
 
   '@alloc/quick-lru@5.3.0': {}
@@ -4771,6 +4827,25 @@ snapshots:
       tslib: 2.8.1
 
   '@aws-sdk/credential-providers@3.1125.0':
+    dependencies:
+      '@aws-sdk/core': 3.977.9
+      '@aws-sdk/credential-provider-cognito-identity': 3.972.69
+      '@aws-sdk/credential-provider-env': 3.972.70
+      '@aws-sdk/credential-provider-http': 3.972.72
+      '@aws-sdk/credential-provider-ini': 3.973.15
+      '@aws-sdk/credential-provider-login': 3.972.77
+      '@aws-sdk/credential-provider-node': 3.972.82
+      '@aws-sdk/credential-provider-process': 3.972.70
+      '@aws-sdk/credential-provider-sso': 3.973.14
+      '@aws-sdk/credential-provider-web-identity': 3.972.76
+      '@aws-sdk/nested-clients': 3.997.44
+      '@aws-sdk/types': 3.974.5
+      '@smithy/core': 3.33.3
+      '@smithy/credential-provider-imds': 4.5.2
+      '@smithy/types': 4.17.2
+      tslib: 2.8.1
+
+  '@aws-sdk/credential-providers@3.1126.0':
     dependencies:
       '@aws-sdk/core': 3.977.9
       '@aws-sdk/credential-provider-cognito-identity': 3.972.69
@@ -5492,7 +5567,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
 
-  '@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@3.25.76)':
+  '@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.5.4)':
     dependencies:
       '@hono/node-server': 2.1.1(hono@4.13.5)
       ajv: 8.20.0
@@ -5509,8 +5584,8 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 3.25.76
-      zod-to-json-schema: 3.25.2(zod@3.25.76)
+      zod: 4.5.4
+      zod-to-json-schema: 3.25.2(zod@4.5.4)
     transitivePeerDependencies:
       - supports-color
 
@@ -7474,8 +7549,10 @@ snapshots:
 
   yocto-queue@0.1.0: {}
 
-  zod-to-json-schema@3.25.2(zod@3.25.76):
+  zod-to-json-schema@3.25.2(zod@4.5.4):
     dependencies:
-      zod: 3.25.76
+      zod: 4.5.4
 
   zod@3.25.76: {}
+
+  zod@4.5.4: {}

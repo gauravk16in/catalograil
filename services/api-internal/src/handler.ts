@@ -1,10 +1,11 @@
 import { Logger } from '@aws-lambda-powertools/logger';
 import { AppError, searchRequestSchema, systemClock } from '@catalograil/core';
 import { DynamoQueryEmbeddingCache, DynamoSearchLogger } from '@catalograil/aws';
-import { getSql } from '@catalograil/db';
+import { getDb, getSql } from '@catalograil/db';
 import { BedrockEmbedder, HttpImageFetcher, createBedrockInvoker } from '@catalograil/embeddings';
 import { runSearch, type SearchPipelineDeps } from '@catalograil/search';
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
+import { getPolicySummaries, getProductDetail } from './handlers/detail.js';
 
 const logger = new Logger({ serviceName: 'api-internal' });
 
@@ -52,6 +53,25 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
      * happens. The gateway decides who may call which; this only decides what search means.
      */
     const path = event.rawPath.replace(/\/+$/, '');
+    /**
+     * Detail routes for the MCP tools, on the same Lambda as search.
+     *
+     * They share the database connection and the cold start; splitting them out would mean
+     * an assistant's first `get_product` after a `search_products` pays a second cold start
+     * inside the same conversation turn.
+     */
+    if (path.endsWith('/internal/product')) {
+      const body = event.body ? (JSON.parse(event.body) as { productId?: string }) : {};
+      if (!body.productId) throw new AppError('VALIDATION_FAILED', 'productId is required.');
+      return json(200, await getProductDetail(getDb(), body.productId));
+    }
+
+    if (path.endsWith('/internal/policies')) {
+      const body = event.body ? (JSON.parse(event.body) as { merchantId?: string }) : {};
+      if (!body.merchantId) throw new AppError('VALIDATION_FAILED', 'merchantId is required.');
+      return json(200, await getPolicySummaries(getDb(), body.merchantId));
+    }
+
     const isSearchRoute =
       path.endsWith('/internal/search') ||
       path.endsWith('/merchant/search-preview') ||

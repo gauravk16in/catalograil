@@ -5,6 +5,7 @@ import { ApiStack } from '../stacks/api-stack.js';
 import { DataStack } from '../stacks/data-stack.js';
 import { AuthStack } from '../stacks/auth-stack.js';
 import { FrontendStack } from '../stacks/frontend-stack.js';
+import { McpStack } from '../stacks/mcp-stack.js';
 import { NetworkStack } from '../stacks/network-stack.js';
 import { QueueStack } from '../stacks/queue-stack.js';
 import { WorkerStack } from '../stacks/worker-stack.js';
@@ -18,6 +19,19 @@ import { WorkerStack } from '../stacks/worker-stack.js';
  *   cdk deploy --all --context env=dev
  */
 const app = new App();
+
+/**
+ * Reads an environment variable, treating an empty value as absent.
+ *
+ * `process.env.X ?? fallback` does *not* fall back on `''`, and a `.env` file written as
+ * `X=` yields exactly that. The result was a Lambda deployed with the variable silently
+ * dropped — CDK omits empty-string environment entries — and a 500 at runtime naming a
+ * variable the stack definition clearly set.
+ */
+function envOr(name: string, fallback: string): string {
+  const value = process.env[name];
+  return value && value.length > 0 ? value : fallback;
+}
 const config = resolveEnv(app);
 
 const env = {
@@ -81,10 +95,26 @@ const api = new ApiStack(app, stackName('Api', config), {
   searchLogsTable: data.tables.SearchLogs!,
   enrichmentQueue: queues.queues.enrichment,
   tokenKey: data.tokenKey,
+  idempotencyTable: data.tables.IdempotencyKeys!,
+  sessionsTable: data.tables.Sessions!,
+  handoffSecret: envOr('HANDOFF_TOKEN_SECRET', 'dev-handoff-secret-change-me'),
+  buyerAppUrl: envOr('BUYER_APP_URL', 'https://main.d1ypcvqs4kcq44.amplifyapp.com'),
   merchantPool: auth.merchantPool,
   merchantPoolClient: auth.merchantClient,
   buyerPool: auth.buyerPool,
   buyerPoolClient: auth.buyerClient,
+});
+
+/**
+ * The MCP server (T2.1). Depends only on the API's URL, so it deploys after the API and
+ * before nothing.
+ */
+new McpStack(app, stackName('Mcp', config), {
+  env,
+  config,
+  apiBaseUrl: api.api.apiEndpoint,
+  buyerAppUrl: envOr('BUYER_APP_URL', 'https://main.d1ypcvqs4kcq44.amplifyapp.com'),
+  rateLimitTable: data.tables.RateLimits!,
 });
 
 /**

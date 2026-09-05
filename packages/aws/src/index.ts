@@ -8,3 +8,6 @@
 export * from './aws.js';
 export * from './dynamo.js';
 export * from './memory.js';
+export * from './rate-limit.js';
+export * from './idempotency.js';
+export * from './sessions.js';

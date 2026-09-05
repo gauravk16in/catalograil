@@ -32,12 +32,16 @@ export class DynamoQueryEmbeddingCache implements QueryEmbeddingCache {
     this.client = documentClient(client);
   }
 
-  async get(queryHash: string): Promise<number[] | undefined> {
+  async get(queryHash: string): Promise<number[] | null | undefined> {
     try {
       const result = await this.client.send(
         new GetCommand({ TableName: this.tableName, Key: { pk: `Q#${queryHash}`, sk: 'META' } }),
       );
-      const vector = result.Item?.vector as number[] | undefined;
+      if (!result.Item) return undefined;
+      const vector = result.Item.vector as number[] | null | undefined;
+      // A stored `null` is a remembered failure and must not read as a miss, or the thing
+      // that failed gets retried on every turn.
+      if (vector === null) return null;
       return Array.isArray(vector) ? vector : undefined;
     } catch {
       /**
@@ -49,14 +53,14 @@ export class DynamoQueryEmbeddingCache implements QueryEmbeddingCache {
     }
   }
 
-  async set(queryHash: string, vector: readonly number[]): Promise<void> {
+  async set(queryHash: string, vector: readonly number[] | null): Promise<void> {
     await this.client.send(
       new PutCommand({
         TableName: this.tableName,
         Item: {
           pk: `Q#${queryHash}`,
           sk: 'META',
-          vector: [...vector],
+          vector: vector === null ? null : [...vector],
           ttl: Math.floor(Date.now() / 1000) + QUERY_CACHE_TTL_SECONDS,
         },
       }),
@@ -145,7 +149,7 @@ export class InMemoryQueryEmbeddingCache implements QueryEmbeddingCache {
   hits = 0;
   misses = 0;
 
-  async get(queryHash: string): Promise<number[] | undefined> {
+  async get(queryHash: string): Promise<number[] | null | undefined> {
     const hit = this.entries.get(queryHash);
     if (hit) this.hits++;
     else this.misses++;
