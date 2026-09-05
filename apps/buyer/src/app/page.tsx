@@ -1,11 +1,14 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, describeError } from '../lib/api';
 import { formatPaise, relativeTime } from '../lib/format';
-import { Badge, Button, Card, Empty, ErrorNote, inputClass } from '../components/ui';
+import { Badge, Button, Card, Empty, ErrorNote } from '../components/ui';
 import { ProductImage } from '../components/product-image';
 import { ProductDetail } from '../components/product-detail';
+import { Glow } from '../components/glow';
+import { ResultSkeleton, SearchStage } from '../components/search-stage';
+import { FilterBar, type Filters } from '../components/filters';
 
 /**
  * The buyer-facing search surface.
@@ -59,18 +62,24 @@ export default function BuyerSearch() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [opened, setOpened] = useState<SearchResultItem | null>(null);
+  const [filters, setFilters] = useState<Filters>({});
+  const [focused, setFocused] = useState(false);
+  const [cursor, setCursor] = useState(-1);
+  const lastQuery = useRef('');
 
-  async function run(value: string) {
+  const run = useCallback(async (value: string, withFilters: Filters) => {
     if (!value.trim()) return;
+    lastQuery.current = value;
     setQuery(value);
     setLoading(true);
     setError(null);
+    setCursor(-1);
 
     try {
       setResponse(
         await api.post<SearchResponse>('/search', {
           query: value,
-          filters: {},
+          filters: withFilters,
           limit: 10,
           source: 'web',
         }),
@@ -81,7 +90,46 @@ export default function BuyerSearch() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
+
+  /**
+   * Changing a filter re-runs the search immediately.
+   *
+   * That immediacy is the point of the controls: a buyer drops the budget and watches items
+   * disappear, which teaches in one interaction what a paragraph of copy about hard
+   * exclusions could not.
+   */
+  useEffect(() => {
+    if (!lastQuery.current) return;
+    void run(lastQuery.current, filters);
+    // Intentionally keyed on `filters` alone: `run` is stable via useCallback, and including
+    // it would only add noise.
+  }, [filters, run]);
+
+  /**
+   * Arrow keys move through results, Enter opens one.
+   *
+   * Someone comparing four shirts should not have to move their hand to the mouse between
+   * each — and it costs nothing to support.
+   */
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      const results = response?.results ?? [];
+      if (results.length === 0 || opened) return;
+
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setCursor((c) => Math.min(c + 1, results.length - 1));
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setCursor((c) => Math.max(c - 1, -1));
+      } else if (event.key === 'Enter' && cursor >= 0) {
+        setOpened(results[cursor] ?? null);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [response, cursor, opened]);
 
   return (
     <div className="space-y-6">
@@ -95,19 +143,30 @@ export default function BuyerSearch() {
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          void run(query);
+          void run(query, filters);
         }}
-        className="flex gap-2"
+        className="space-y-3"
       >
-        <input
-          className={inputClass}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="something to wear to a friend's wedding"
-        />
-        <Button type="submit" disabled={loading || !query.trim()}>
-          {loading ? 'Searching…' : 'Search'}
-        </Button>
+        {/* The border lights while the box has focus or a search is running — the one place
+            movement earns its keep, because it marks where the buyer is typing. */}
+        <Glow active={focused || loading}>
+          <div className="flex items-center gap-2 px-2 py-1.5">
+            <input
+              className="w-full bg-transparent px-2 py-2 text-base outline-none placeholder:text-[hsl(var(--muted))]"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onFocus={() => setFocused(true)}
+              onBlur={() => setFocused(false)}
+              placeholder="something to wear to a friend's wedding"
+              aria-label="Describe what you need"
+            />
+            <Button type="submit" disabled={loading || !query.trim()}>
+              {loading ? 'Searching' : 'Search'}
+            </Button>
+          </div>
+        </Glow>
+
+        <FilterBar filters={filters} onChange={setFilters} disabled={loading} />
       </form>
 
       {!response && !loading && (
@@ -115,7 +174,7 @@ export default function BuyerSearch() {
           {EXAMPLES.map((example) => (
             <button
               key={example}
-              onClick={() => void run(example)}
+              onClick={() => void run(example, filters)}
               className="rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--bg))] px-3 py-1.5 text-sm text-[hsl(var(--muted))] hover:text-[hsl(var(--text))]"
             >
               {example}
@@ -126,9 +185,19 @@ export default function BuyerSearch() {
 
       {error && <ErrorNote>{error}</ErrorNote>}
 
+      {loading && (
+        <div className="space-y-3">
+          <SearchStage query={query} />
+          {[0, 1, 2].map((i) => (
+            <ResultSkeleton key={i} />
+          ))}
+        </div>
+      )}
+
       {opened && <ProductDetail result={opened} onClose={() => setOpened(null)} />}
 
       {response &&
+        !loading &&
         (response.results.length === 0 ? (
           <Card>
             {/* Rule 8's sentence, shown as written rather than replaced with "no results". */}
@@ -138,9 +207,21 @@ export default function BuyerSearch() {
           <div className="space-y-3">
             <p className="text-xs text-[hsl(var(--muted))]">
               {response.results.length} results in {response.tookMs}ms
+              {response.results.length > 1 && ' · ↑↓ to move, Enter to open'}
             </p>
-            {response.results.map((result) => (
-              <ResultCard key={result.id} result={result} onOpen={setOpened} />
+            {response.results.map((result, index) => (
+              <div
+                key={result.id}
+                className="cr-rise"
+                // Staggered, so the answer reads as assembling rather than appearing whole.
+                style={{ animationDelay: `${Math.min(index, 6) * 45}ms` }}
+              >
+                <ResultCard
+                  result={result}
+                  onOpen={setOpened}
+                  selected={index === cursor}
+                />
+              </div>
             ))}
           </div>
         ))}
@@ -151,9 +232,11 @@ export default function BuyerSearch() {
 function ResultCard({
   result,
   onOpen,
+  selected,
 }: {
   result: SearchResultItem;
   onOpen: (result: SearchResultItem) => void;
+  selected?: boolean;
 }) {
   return (
     /*
@@ -161,7 +244,13 @@ function ResultCard({
       A buyer scanning results taps the picture or the price as readily as the name, and a
       card that only responds in one place reads as not responding at all.
     */
-    <Card className="overflow-hidden transition hover:border-[hsl(var(--fg))]">
+    <Card
+      className={`overflow-hidden transition ${
+        selected
+          ? 'border-[hsl(var(--accent))] ring-2 ring-[hsl(var(--accent-soft))]'
+          : 'hover:border-[hsl(var(--text))]'
+      }`}
+    >
       <button
         type="button"
         onClick={() => onOpen(result)}
