@@ -116,7 +116,14 @@ export class HttpCatalog implements CatalogPort {
    * mind at the address step — and they change their mind often.
    */
   async createCheckout(input: CheckoutInput): Promise<unknown> {
-    const session = (await this.post('/internal/checkout', {
+    /**
+     * `/checkout/session`, not `/internal/*`.
+     *
+     * Checkout is deliberately open at the gateway so a guest can buy without an account,
+     * and the single-use handoff token is what authorises the page that follows. Signing
+     * this one would work but implies a gate that is not there.
+     */
+    const session = (await this.post('/checkout/session', {
       productId: input.product_id,
       ...(input.variant_id ? { variantId: input.variant_id } : {}),
       quantity: input.quantity ?? 1,
@@ -124,7 +131,7 @@ export class HttpCatalog implements CatalogPort {
     })) as { sessionId?: string; token?: string; expiresAt?: string; summary?: unknown };
 
     return {
-      checkout_url: `${this.options.buyerAppUrl.replace(/\/$/, '')}/s/${session.token ?? ''}`,
+      checkout_url: `${this.options.buyerAppUrl.replace(/\/$/, '')}/s?t=${encodeURIComponent(session.token ?? '')}`,
       session_id: session.sessionId,
       expires_at: session.expiresAt,
       summary: session.summary,

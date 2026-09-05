@@ -6,6 +6,15 @@ import { DynamoIdempotencyStore } from '@catalograil/aws';
 import { KmsTokenCipher } from '@catalograil/razorpay';
 import { systemClock } from '@catalograil/core';
 import { handleRazorpayWebhook } from './handlers/webhook.js';
+import { DynamoSessionStore } from '@catalograil/aws';
+import {
+  createCheckoutSession,
+  redeemHandoffToken,
+  updateSession,
+  type SessionDeps,
+} from './handlers/session.js';
+import { createOrders } from './handlers/checkout.js';
+import { KmsTokenCipher as Cipher } from '@catalograil/razorpay';
 import {
   createAddress,
   deleteAddress,
@@ -72,6 +81,65 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       return json(200, result);
     }
 
+    /**
+     * Checkout routes, before identity is required.
+     *
+     * A guest checks out without an account (T2.21) — requiring one here would be the
+     * clearest possible way to lose a buyer who has already chosen what they want. The
+     * handoff token is what authorises these, and it is single-use.
+     */
+    if (method === 'POST' && path === '/checkout/session') {
+      // Called by the MCP server over SigV4, not by a browser: it is how create_checkout
+      // turns a tool call into a link.
+      return json(201, await createCheckoutSession(sessionDeps(), parseBody(event) as never));
+    }
+
+    if (method === 'POST' && path === '/checkout/redeem') {
+      const body = parseBody(event) as { token?: string };
+      if (!body.token) throw new AppError('VALIDATION_FAILED', 'A token is required.');
+      return json(200, await redeemHandoffToken(sessionDeps(), body.token));
+    }
+
+    const sessionMatch = /^\/checkout\/session\/([0-9a-fA-F-]{36})$/.exec(path);
+    if (sessionMatch && method === 'PATCH') {
+      return json(200, await updateSession(sessionDeps(), sessionMatch[1]!, parseBody(event) as never));
+    }
+
+    if (method === 'POST' && path === '/checkout/pay') {
+      const body = parseBody(event) as {
+        sessionId?: string;
+        buyerEmail?: string;
+        buyerPhone?: string;
+        shippingAddress?: Record<string, unknown>;
+      };
+      if (!body.sessionId || !body.buyerEmail || !body.shippingAddress) {
+        throw new AppError('VALIDATION_FAILED', 'Session, contact and address are all required.');
+      }
+
+      const session = await sessionDeps().sessions.get(body.sessionId);
+      if (!session) throw new AppError('NOT_FOUND', 'No such checkout session.');
+
+      return json(
+        200,
+        await createOrders(
+          {
+            db: db(),
+            clock: systemClock,
+            cipherFor: (id) => new Cipher(required('KMS_TOKEN_KEY_ID'), id),
+          },
+          {
+            cart: session.cart,
+            buyerEmail: body.buyerEmail,
+            ...(body.buyerPhone ? { buyerPhone: body.buyerPhone } : {}),
+            ...(session.buyerId ? { buyerId: session.buyerId } : {}),
+            shippingAddress: body.shippingAddress,
+            sessionId: body.sessionId,
+            source: 'web',
+          },
+        ),
+      );
+    }
+
     const caller = requireBuyer(event as never);
 
     if (path === '/buyer/me') {
@@ -115,6 +183,21 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
   } finally {
     logger.removeKeys(['correlationId']);
   }
+}
+
+let cachedSessionDeps: SessionDeps | undefined;
+
+function sessionDeps(): SessionDeps {
+  if (!cachedSessionDeps) {
+    cachedSessionDeps = {
+      db: db(),
+      sessions: new DynamoSessionStore(required('DDB_TABLE_SESSIONS')),
+      clock: systemClock,
+      handoffSecret: required('HANDOFF_TOKEN_SECRET'),
+      buyerAppUrl: required('BUYER_APP_URL'),
+    };
+  }
+  return cachedSessionDeps;
 }
 
 function required(name: string): string {

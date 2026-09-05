@@ -35,6 +35,17 @@ export interface ApiStackProps extends StackProps {
   readonly tokenKey: kms.IKey;
   /** Conditional writes that make webhook delivery idempotent (rule 2, T2.16). */
   readonly idempotencyTable: dynamodb.ITable;
+  /** Checkout sessions and spent handoff tokens (T2.13, T2.14). */
+  readonly sessionsTable: dynamodb.ITable;
+  /**
+   * Signs handoff tokens.
+   *
+   * Passed in rather than generated here so it survives a stack replacement — regenerating
+   * it would invalidate every checkout link in flight, which for a buyer mid-purchase is
+   * indistinguishable from the product being broken.
+   */
+  readonly handoffSecret: string;
+  readonly buyerAppUrl: string;
   /**
    * Cognito pools (DC1). Optional so the API can still be synthesised and deployed before
    * the auth stack exists — without them the routes keep the IAM gate rather than becoming
@@ -340,12 +351,16 @@ export class ApiStack extends Stack {
         ...databaseEnvironment(proxy.endpoint),
         KMS_TOKEN_KEY_ID: props.tokenKey.keyId,
         DDB_TABLE_IDEMPOTENCY: props.idempotencyTable.tableName,
+        DDB_TABLE_SESSIONS: props.sessionsTable.tableName,
+        HANDOFF_TOKEN_SECRET: props.handoffSecret,
+        BUYER_APP_URL: props.buyerAppUrl,
       },
     });
 
     proxy.grantConnect(buyerApi, 'catalograil');
     props.tokenKey.grantEncryptDecrypt(buyerApi);
     props.idempotencyTable.grantReadWriteData(buyerApi);
+    props.sessionsTable.grantReadWriteData(buyerApi);
 
     /**
      * The Razorpay webhook, unauthenticated at the gateway and authenticated by HMAC.
@@ -354,6 +369,19 @@ export class ApiStack extends Stack {
      * merchant's own secret — proves both who sent it and that the body is unaltered, which
      * a bearer token would not.
      */
+    /**
+     * Checkout, unauthenticated at the gateway.
+     *
+     * A guest buys without an account (T2.21), and requiring one here is the clearest way
+     * to lose a buyer who has already decided. What authorises these is the single-use
+     * handoff token, checked inside the handler.
+     */
+    this.api.addRoutes({
+      path: '/checkout/{proxy+}',
+      methods: [apigw.HttpMethod.POST, apigw.HttpMethod.PATCH],
+      integration: new HttpLambdaIntegration('CheckoutIntegration', buyerApi),
+    });
+
     this.api.addRoutes({
       path: '/webhooks/razorpay/{merchantId}',
       methods: [apigw.HttpMethod.POST],

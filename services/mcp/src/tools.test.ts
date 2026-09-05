@@ -195,7 +195,7 @@ describe('create_checkout', () => {
      * address — an orphaned payment object for everyone who changes their mind at that step.
      */
     const catalog = catalogWith({
-      '/internal/checkout': {
+      '/checkout/session': {
         sessionId: 'sess-1',
         token: 'tok-abc',
         expiresAt: '2026-09-05T11:00:00.000Z',
@@ -208,7 +208,7 @@ describe('create_checkout', () => {
       note: string;
     };
 
-    expect(result.checkout_url).toBe('https://buy.test/s/tok-abc');
+    expect(result.checkout_url).toBe('https://buy.test/s?t=tok-abc');
     expect(result.session_id).toBe('sess-1');
     expect(result.note).toMatch(/pays this merchant directly/i);
   });

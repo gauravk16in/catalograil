@@ -63,6 +63,9 @@ function synth(env: 'dev' | 'prod' = 'dev') {
     enrichmentQueue: queues.queues.enrichment,
     tokenKey: data.tokenKey,
   idempotencyTable: data.tables.IdempotencyKeys!,
+  sessionsTable: data.tables.Sessions!,
+  handoffSecret: process.env.HANDOFF_TOKEN_SECRET ?? 'dev-handoff-secret-change-me',
+  buyerAppUrl: process.env.BUYER_APP_URL ?? 'https://main.d1ypcvqs4kcq44.amplifyapp.com',
   });
 
   return {
@@ -185,8 +188,12 @@ describe('api stack', () => {
      * webhook secret — stronger than a bearer token here, because it also proves the body
      * was not altered in transit. Unauthenticated *at the gateway* is not the same as
      * unauthenticated.
+     *
+     * `/checkout/*` is a guest checkout (T2.21). Requiring an account of someone who has
+     * already chosen what they want is the clearest way to lose them, so what authorises
+     * these is the single-use handoff token checked inside the handler.
      */
-    const PUBLIC = ['/health', 'POST /search', '/webhooks/razorpay/'];
+    const PUBLIC = ['/health', 'POST /search', '/webhooks/razorpay/', '/checkout/'];
 
     for (const [id, route] of Object.entries(routes)) {
       const key = String(route.Properties?.RouteKey ?? '');
