@@ -180,8 +180,19 @@ export class HttpCatalog implements CatalogPort {
           signals: merchant.trust?.signals ?? [],
         },
       },
-      image_url: (raw.imageUrl as string) ?? null,
-      product_url: null,
+      /**
+       * The search API returns `images`, an array. This read `raw.imageUrl`, which no
+       * response has ever contained, so every result reached the model with no picture and
+       * the assistant could only describe what it could not show.
+       */
+      image_url: firstImage(raw.images),
+      /**
+       * A page for the buyer to open, which is also what makes the card's image and price
+       * checkable against something other than our own word for it.
+       */
+      product_url: raw.productId
+        ? `${this.options.buyerAppUrl.replace(/\/$/, '')}/?product=${encodeURIComponent(String(raw.productId))}`
+        : null,
     };
   }
 
@@ -333,4 +344,16 @@ export class HttpCatalog implements CatalogPort {
 function deliveryEstimate(estimate: string | undefined, pincode?: string): string | null {
   if (!estimate) return null;
   return pincode ? `${estimate} to ${pincode}` : estimate;
+}
+
+/**
+ * The first usable image, or null.
+ *
+ * Empty strings are filtered rather than passed on: a card rendering `<img src="">` re-requests
+ * the page it is embedded in, which is a broken image at best and a request loop at worst.
+ */
+function firstImage(images: unknown): string | null {
+  if (!Array.isArray(images)) return null;
+  const found = images.find((image) => typeof image === 'string' && image.trim() !== '');
+  return typeof found === 'string' ? found : null;
 }

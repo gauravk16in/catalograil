@@ -5,17 +5,20 @@ import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoRateLimiter, failOpen, type RateLimiter } from '@catalograil/aws';
 import { HttpCatalog } from './catalog.js';
-import { buildServer, type AuthContext } from './server.js';
+import { TOOL_META, buildServer, type AuthContext } from './server.js';
 import {
   TokenVerifier,
   authorizationServerMetadata,
   connectRequired,
   protectedResourceMetadata,
+  registeredClient,
   requireScope,
   type OAuthConfig,
   type VerifiedCaller,
 } from './oauth.js';
+import { z } from 'zod';
 import { SERVER_DESCRIPTION } from './tools.js';
+import { PRODUCT_WIDGET_URI, renderWidget, widgetResources } from './widget.js';
 
 const logger = new Logger({ serviceName: 'mcp' });
 
@@ -129,6 +132,9 @@ function catalog(): HttpCatalog {
 export async function handler(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
   const correlationId = event.requestContext.requestId;
   logger.appendKeys({ correlationId });
+  // Held outside the try so a failure still answers the request it was answering. A client
+  // matching responses to requests treats a null id as unmatched and waits.
+  let requestId: string | number | null = null;
 
   try {
     const method = event.requestContext.http.method;
@@ -151,6 +157,22 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       return json(200, authorizationServerMetadata(oauth(event).config));
     }
 
+    /**
+     * Dynamic client registration (RFC 7591).
+     *
+     * Answered here rather than proxied, because Cognito has no such endpoint. Without it an
+     * assistant has no client id, cannot start an authorization code flow, and adds the
+     * connector as anonymous — which is exactly the "it never asked me to log in" report.
+     */
+    if (method === 'POST' && path.endsWith('/register')) {
+      const registration = event.body
+        ? (JSON.parse(
+            event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString('utf8') : event.body,
+          ) as { redirect_uris?: unknown; client_name?: unknown })
+        : null;
+      return json(201, registeredClient(oauth(event).config, registration));
+    }
+
     // A GET is how a connector probes for liveness before it will attempt a session.
     if (method === 'GET') {
       return json(200, {
@@ -171,6 +193,31 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
     if (!body || body.jsonrpc !== '2.0') {
       return json(400, rpcError(body?.id ?? null, -32600, 'Not a JSON-RPC 2.0 request.'));
+    }
+
+    requestId = body.id ?? null;
+
+    /**
+     * The challenge that makes a buyer see a login screen — on the personal tools only.
+     *
+     * An assistant starts OAuth when it is refused and never before, so *something* has to
+     * refuse it. But refusing the handshake refuses everyone: searching is the thing a buyer
+     * does before they have any reason to trust us with an account, and an assistant that
+     * cannot answer "what shirts are under ₹2,500" without a sign-up is worth less than one
+     * that can. So the line is drawn at the tools that read or act on someone's own data —
+     * their addresses, their orders, an order placed in their name. Those are refused, the
+     * connector starts the flow, and searching keeps working throughout.
+     *
+     * The tools also refuse themselves, in `requireToken`. This check is here because it can
+     * refuse before the request costs anything, not because that one is redundant.
+     */
+    const authorizationHeader = event.headers.authorization ?? event.headers.Authorization;
+    if (!authorizationHeader && body.method === 'tools/call') {
+      const toolName = (body.params as { name?: string } | undefined)?.name ?? '';
+      if (AUTHENTICATED_TOOLS.has(toolName)) {
+        logger.info('Unauthenticated call to a personal tool', { tool: toolName });
+        return unauthorized(event, requestId);
+      }
     }
 
     /**
@@ -212,12 +259,12 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     /**
      * The buyer's token, verified once per request and shared with the tools that need it.
      *
-     * Verification is lazy: the read-only tools work without any account at all, and making
-     * every anonymous search pay a JWKS fetch and a signature check would be a real cost for
-     * a check most calls do not need.
+     * Only tool calls pay for it. The handshake is challenged on a missing header alone,
+     * which costs nothing; a signature check and a JWKS fetch are worth doing once a caller
+     * is about to act, and the scopes it yields only mean anything there.
      */
     let verified: VerifiedCaller | null | undefined;
-    const authorization = event.headers.authorization ?? event.headers.Authorization;
+    const authorization = authorizationHeader;
 
     const authContext: AuthContext = {
       token: () => (authorization?.startsWith('Bearer ') ? authorization.slice(7).trim() : null),
@@ -256,26 +303,10 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
      * buyer if the connector does not.
      */
     if ((err as { code?: string }).code === 'UNAUTHENTICATED') {
-      return {
-        statusCode: 401,
-        headers: {
-          'content-type': 'application/json',
-          'www-authenticate': `Bearer resource_metadata="${publicUrl(event)}/.well-known/oauth-protected-resource"`,
-        },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: null,
-          result: {
-            content: [
-              { type: 'text', text: JSON.stringify(connectRequired(publicUrl(event))) },
-            ],
-            isError: true,
-          },
-        }),
-      };
+      return unauthorized(event, requestId);
     }
 
-    return json(200, rpcError(null, -32603, err instanceof Error ? err.message : 'Internal error.'));
+    return json(200, rpcError(requestId, -32603, err instanceof Error ? err.message : 'Internal error.'));
   } finally {
     logger.removeKeys(['correlationId']);
   }
@@ -295,7 +326,9 @@ async function dispatch(request: JsonRpcRequest, auth: AuthContext): Promise<unk
     case 'initialize':
       return {
         protocolVersion: '2024-11-05',
-        capabilities: { tools: {} },
+        // `resources` is not decoration: a host will not fetch the widget template it was
+        // told about in a tool's meta unless the server admits to serving resources.
+        capabilities: { tools: {}, resources: { listChanged: false } },
         serverInfo: { name: 'catalograil', version: '0.1.0' },
         instructions: SERVER_DESCRIPTION,
       };
@@ -305,6 +338,34 @@ async function dispatch(request: JsonRpcRequest, auth: AuthContext): Promise<unk
 
     case 'tools/list':
       return { tools: listTools(server) };
+
+    /**
+     * The widget template, served as a resource.
+     *
+     * ChatGPT reads the URI from a tool's `openai/outputTemplate` and fetches it here once,
+     * before any tool has run — so this copy carries no data and reads it from
+     * `window.openai.toolOutput` at render time instead.
+     */
+    case 'resources/list':
+      return { resources: widgetResources() };
+
+    case 'resources/templates/list':
+      return { resourceTemplates: [] };
+
+    case 'resources/read': {
+      const uri = (request.params as { uri?: string } | undefined)?.uri;
+      if (uri !== PRODUCT_WIDGET_URI) throw new Error(`Unknown resource: ${uri}`);
+      return {
+        contents: [
+          {
+            uri: PRODUCT_WIDGET_URI,
+            mimeType: 'text/html+skybridge',
+            text: renderWidget(null),
+            _meta: { 'openai/widgetPrefersBorder': false },
+          },
+        ],
+      };
+    }
 
     case 'tools/call': {
       const params = (request.params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
@@ -327,6 +388,7 @@ function listTools(server: ReturnType<typeof buildServer>): unknown[] {
 
   return Object.entries(registered).map(([name, tool]) => ({
     name,
+    ...(TOOL_META[name] ? { _meta: TOOL_META[name] } : {}),
     description: tool.description,
     inputSchema: toJsonSchema(tool.inputSchema),
   }));
@@ -362,64 +424,88 @@ interface RegisteredTool {
 }
 
 /**
- * Zod to JSON Schema, minimally.
+ * Zod to JSON Schema.
  *
- * A model reads the descriptions far more than the types, so this deliberately carries
- * every `.describe()` through and keeps type inference shallow — a precise schema with the
- * descriptions dropped would be worse for tool selection than a loose one that keeps them.
+ * This was hand-rolled against Zod 3's `_def.typeName`, which Zod 4 does not have. Every
+ * field therefore fell through to `type: "string"` and none were marked optional — so the
+ * tool list told Claude that ten string parameters were all required, and Claude did the
+ * only thing it could: sent `"5"` for `limit`, `"true"` for `in_stock_only`, and `""` for
+ * every optional it had nothing to say about. The connector looked broken. It was being
+ * told the wrong shape.
+ *
+ * Zod ships its own converter now, so use it. `io: 'input'` matters — these schemas coerce
+ * and default, and the model needs the shape it should *send*, not the shape a handler
+ * receives. `required` is computed by asking each field whether it tolerates being absent,
+ * which is the only definition that stays true through preprocess and pipe wrappers.
  */
-function toJsonSchema(schema?: RegisteredTool['inputSchema']): Record<string, unknown> {
-  const shape = (schema as unknown as { shape?: Record<string, ZodLike> })?.shape ?? {};
-  const properties: Record<string, unknown> = {};
-  const required: string[] = [];
+export function toJsonSchema(schema?: RegisteredTool['inputSchema']): Record<string, unknown> {
+  const shape = (schema as unknown as { shape?: Record<string, ZodField> })?.shape ?? {};
+  const { $schema: _ignored, ...json } = z.toJSONSchema(z.object(shape as never), {
+    io: 'input',
+    unrepresentable: 'any',
+  }) as Record<string, unknown>;
 
-  for (const [key, field] of Object.entries(shape)) {
-    const def = unwrap(field);
-    properties[key] = {
-      type: def.type,
-      ...(def.description ? { description: def.description } : {}),
-    };
-    if (!def.optional) required.push(key);
-  }
+  const required = Object.entries(shape)
+    .filter(([, field]) => !field.safeParse(undefined).success)
+    .map(([key]) => key);
 
-  return { type: 'object', properties, ...(required.length > 0 ? { required } : {}) };
+  return { ...json, type: 'object', ...(required.length > 0 ? { required } : {}) };
 }
 
-interface ZodLike {
-  _def?: { typeName?: string; description?: string; innerType?: ZodLike; defaultValue?: unknown };
-}
-
-function unwrap(field: ZodLike): { type: string; description?: string; optional: boolean } {
-  let current = field;
-  let optional = false;
-  let description = current._def?.description;
-
-  while (
-    current._def?.typeName === 'ZodOptional' ||
-    current._def?.typeName === 'ZodDefault'
-  ) {
-    optional = true;
-    current = current._def.innerType!;
-    description = description ?? current._def?.description;
-  }
-
-  const typeName = current._def?.typeName ?? '';
-  const type =
-    typeName === 'ZodNumber'
-      ? 'number'
-      : typeName === 'ZodBoolean'
-        ? 'boolean'
-        : typeName === 'ZodArray'
-          ? 'array'
-          : typeName === 'ZodRecord' || typeName === 'ZodObject'
-            ? 'object'
-            : 'string';
-
-  return { type, ...(description ? { description } : {}), optional };
+interface ZodField {
+  safeParse(input: unknown): { success: boolean };
 }
 
 function rpcError(id: string | number | null, code: number, message: string) {
   return { jsonrpc: '2.0', id, error: { code, message } };
+}
+
+/**
+ * The tools that need an account. Everything else — searching, comparing, reading a
+ * merchant's policies, starting a checkout — answers anyone.
+ */
+const AUTHENTICATED_TOOLS = new Set([
+  'get_my_addresses',
+  'list_my_orders',
+  'get_order_status',
+  'place_order',
+]);
+
+/**
+ * A 401 carrying both halves of the answer.
+ *
+ * The `WWW-Authenticate` header with `resource_metadata` is what a connector reads to start
+ * the OAuth flow on its own; the JSON-RPC body is what a model reads if the connector does
+ * not, so it can tell the buyer to connect their account instead of inventing a reason.
+ *
+ * A caveat worth knowing before debugging this from a `curl -i`: a Lambda Function URL
+ * rewrites this header to `x-amzn-Remapped-www-authenticate` on the way out, so the client
+ * never sees it under the name the spec names. Discovery still works, because a client that
+ * gets a 401 falls back to fetching `/.well-known/oauth-protected-resource` from the server
+ * URL it was given — which is served here, one hop from the URL the buyer pasted. The header
+ * is sent anyway, for the day this sits behind something that does not rewrite it.
+ */
+function unauthorized(
+  event: APIGatewayProxyEventV2,
+  id: string | number | null,
+): APIGatewayProxyResultV2 {
+  const resource = publicUrl(event);
+  return {
+    statusCode: 401,
+    headers: {
+      'content-type': 'application/json',
+      'www-authenticate': `Bearer resource_metadata="${resource}/.well-known/oauth-protected-resource"`,
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: -32001,
+        message: 'Connect your Conciergent account to use this.',
+        data: connectRequired(resource),
+      },
+    }),
+  };
 }
 
 function json(statusCode: number, body: unknown): APIGatewayProxyResultV2 {

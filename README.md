@@ -104,7 +104,8 @@ marketplaces that could put you there take a commission and stand between you an
 ### The Buyer's Journey
 
 1. **Connect** — copy the MCP URL from Conciergent into Claude or ChatGPT's connector
-   settings. (Optional: browsing works with no account at all.)
+   settings. Searching and comparing work immediately, with no account. The sign-in prompt
+   appears the first time your assistant reaches for something of yours.
 2. **Approve** — you are sent to a Conciergent sign-in page and asked to grant three separate
    permissions: see your addresses, see your orders, place orders for you.
 3. **Ask** — "a formal shirt for an office in Chennai, under ₹2,500". The assistant calls

@@ -1,6 +1,70 @@
 import { z } from 'zod';
 
 /**
+ * Models do not send JSON types. They send strings.
+ *
+ * Observed from a real Claude tool call: `limit` arrived as `"5"`, `in_stock_only` as
+ * `"true"`, and every optional the model chose not to use arrived as `""` rather than being
+ * omitted. A strict schema rejects all of that, and the buyer sees "the connector is
+ * broken" — which is what happened.
+ *
+ * The JSON Schema advertises the right types and models still do this, so tolerating it is
+ * not a workaround to be removed later; it is what talking to a model requires. The
+ * coercion is narrow and total: an empty string means "not given", and a numeric or boolean
+ * string means what it looks like.
+ */
+const blankToUndefined = (value: unknown) => (typeof value === 'string' && value.trim() === '' ? undefined : value);
+
+/** `"5"` → 5, `""` → undefined, `5` → 5. Anything else is left for Zod to reject. */
+const toNumber = (value: unknown) => {
+  const v = blankToUndefined(value);
+  if (typeof v === 'string') {
+    const parsed = Number(v);
+    return Number.isFinite(parsed) ? parsed : v;
+  }
+  return v;
+};
+
+/** `"true"` / `"false"` → boolean, `""` → undefined. Anything else is left for Zod. */
+const toBoolean = (value: unknown) => {
+  const v = blankToUndefined(value);
+  if (typeof v === 'string') {
+    if (v.toLowerCase() === 'true') return true;
+    if (v.toLowerCase() === 'false') return false;
+  }
+  return v;
+};
+
+/**
+ * Coercion has to run *inside* optionality, and the coerced value has to stay acceptable
+ * afterwards. `""` is not `undefined` until the preprocessor has run, so `optional()` on the
+ * outside never short-circuits it — the preprocessor turns it into `undefined` and whatever
+ * follows must then tolerate that. Hence undefined is admissible at all three layers of an
+ * optional field: the preprocess target, the pipe target, and the field itself. The last one
+ * is what makes an entirely absent key legal.
+ */
+const reqString = <T extends z.ZodType<string, string>>(inner: T) => z.preprocess(blankToUndefined, z.string()).pipe(inner);
+const optString = <T extends z.ZodType<string, string>>(inner: T) =>
+  z
+    .preprocess(blankToUndefined, z.string().optional())
+    .pipe(inner.optional())
+    .optional();
+const optNumber = <T extends z.ZodType<number, number>>(inner: T) =>
+  z
+    .preprocess(toNumber, z.number().optional())
+    .pipe(inner.optional())
+    .optional();
+const optBoolean = () =>
+  z
+    .preprocess(toBoolean, z.boolean().optional())
+    .pipe(z.boolean().optional())
+    .optional();
+
+/** An optional number that falls back to `fallback` whether it was blank or absent. */
+const optNumberWithDefault = <T extends z.ZodType<number, number>>(inner: T, fallback: number) =>
+  optNumber(inner).transform((v) => v ?? fallback);
+
+/**
  * T2.2–T2.6 — the tool surface a model sees.
  *
  * Two things shape every schema here.
@@ -16,47 +80,34 @@ import { z } from 'zod';
  */
 
 export const searchProductsSchema = {
-  query: z
-    .string()
-    .max(500)
-    .optional()
-    .describe(
-      'What the buyer is looking for, in their own words. Describe the need rather than ' +
-        'guessing a product name — "something to record my drive" works better than "dashcam".',
-    ),
-  image_url: z
-    .string()
-    .url()
-    .optional()
-    .describe('A publicly reachable image to match visually. May be combined with a query.'),
-  max_price_inr: z.number().positive().optional().describe('Hard ceiling in rupees, not a preference.'),
-  min_price_inr: z.number().positive().optional(),
-  category: z.string().max(120).optional(),
-  delivery_by_days: z
-    .number()
-    .int()
-    .positive()
-    .max(90)
-    .optional()
-    .describe(
-      'Maximum acceptable delivery time. Items that cannot arrive in time are excluded ' +
-        'entirely rather than ranked lower.',
-    ),
-  pincode: z.string().regex(/^[1-9][0-9]{5}$/).optional().describe('Indian PIN code for delivery estimates.'),
+  query: optString(z.string().max(500)).describe(
+    'What the buyer is looking for, in their own words. Describe the need rather than ' +
+      'guessing a product name — "something to record my drive" works better than "dashcam".',
+  ),
+  image_url: optString(z.string().url()).describe(
+    'A publicly reachable image to match visually. May be combined with a query.',
+  ),
+  max_price_inr: optNumber(z.number().positive()).describe('Hard ceiling in rupees, not a preference.'),
+  min_price_inr: optNumber(z.number().positive()),
+  category: optString(z.string().max(120)),
+  delivery_by_days: optNumber(z.number().int().positive().max(90)).describe(
+    'Maximum acceptable delivery time. Items that cannot arrive in time are excluded ' +
+      'entirely rather than ranked lower.',
+  ),
+  pincode: optString(z.string().regex(/^[1-9][0-9]{5}$/)).describe('Indian PIN code for delivery estimates.'),
   attributes: z
     .record(z.string(), z.string())
     .optional()
     .describe('Exact attribute filters, e.g. {"size":"42","fabric":"cotton"}. Applied as exclusions.'),
-  in_stock_only: z.boolean().optional(),
-  limit: z.number().int().min(1).max(5).default(5).describe('Never more than 5.'),
+  in_stock_only: optBoolean(),
+  limit: optNumberWithDefault(z.number().int().min(1).max(5), 5).describe('Never more than 5.'),
 };
 
 export const getProductSchema = {
-  product_id: z
-    .string()
-    .uuid()
-    .describe('The `product_id` from a search result — not its `id`, which is the variant.'),
-  pincode: z.string().regex(/^[1-9][0-9]{5}$/).optional(),
+  product_id: reqString(z.string().uuid()).describe(
+    'The `product_id` from a search result — not its `id`, which is the variant.',
+  ),
+  pincode: optString(z.string().regex(/^[1-9][0-9]{5}$/)),
 };
 
 export const compareProductsSchema = {
@@ -68,50 +119,40 @@ export const compareProductsSchema = {
 };
 
 export const getMerchantPoliciesSchema = {
-  merchant_id: z.string().uuid().describe('From a search result’s merchant object.'),
+  merchant_id: reqString(z.string().uuid()).describe('From a search result’s merchant object.'),
 };
 
 export const createCheckoutSchema = {
-  product_id: z.string().uuid().describe('The `product_id` from a search result.'),
-  variant_id: z
-    .string()
-    .uuid()
-    .optional()
-    .describe(
-      'Which variant to buy — a search result’s `id`. Required when the product has options, ' +
-        'because a size and colour cannot be inferred from the product alone.',
-    ),
-  quantity: z.number().int().min(1).max(20).default(1),
-  buyer_email: z.string().email().optional(),
+  product_id: reqString(z.string().uuid()).describe('The `product_id` from a search result.'),
+  variant_id: optString(z.string().uuid()).describe(
+    'Which variant to buy — a search result’s `id`. Required when the product has options, ' +
+      'because a size and colour cannot be inferred from the product alone.',
+  ),
+  quantity: optNumberWithDefault(z.number().int().min(1).max(20), 1),
+  buyer_email: optString(z.string().email()),
 };
 
 /** T2.7 — the authenticated tools. Each needs a scope the buyer granted explicitly. */
 export const getMyAddressesSchema = {};
 
 export const listMyOrdersSchema = {
-  limit: z.number().int().min(1).max(20).default(10).optional(),
+  limit: optNumberWithDefault(z.number().int().min(1).max(20), 10),
 };
 
 export const getOrderStatusSchema = {
-  order_number: z.string().trim().min(3).max(40).describe('From list_my_orders, e.g. ORD-7K2M9X.'),
+  order_number: reqString(z.string().trim().min(3).max(40)).describe('From list_my_orders, e.g. ORD-7K2M9X.'),
 };
 
 export const placeOrderSchema = {
-  product_id: z.string().uuid().describe('The `product_id` from a search result.'),
-  variant_id: z
-    .string()
-    .uuid()
-    .optional()
-    .describe('Which variant — a search result’s `id`. Required when the product has options.'),
-  quantity: z.number().int().min(1).max(20).default(1),
-  address_id: z
-    .string()
-    .uuid()
-    .optional()
-    .describe(
-      'Which saved address to ship to, from get_my_addresses. Omit to use their default. ' +
-        'Always tell the buyer which address you are using before calling this.',
-    ),
+  product_id: reqString(z.string().uuid()).describe('The `product_id` from a search result.'),
+  variant_id: optString(z.string().uuid()).describe(
+    'Which variant — a search result’s `id`. Required when the product has options.',
+  ),
+  quantity: optNumberWithDefault(z.number().int().min(1).max(20), 1),
+  address_id: optString(z.string().uuid()).describe(
+    'Which saved address to ship to, from get_my_addresses. Omit to use their default. ' +
+      'Always tell the buyer which address you are using before calling this.',
+  ),
 };
 
 /**

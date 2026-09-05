@@ -12,6 +12,7 @@ import {
   searchProductsSchema,
 } from './tools.js';
 import { AppError } from '@catalograil/core';
+import { PRODUCT_WIDGET_URI, renderWidget } from './widget.js';
 import type { CatalogPort } from './port.js';
 
 /**
@@ -37,6 +38,29 @@ export interface AuthContext {
   requireScope(scope: string): void;
 }
 
+/**
+ * Per-tool metadata a host reads to decide how to present the call.
+ *
+ * `openai/outputTemplate` is the one that matters: without it ChatGPT has no template to
+ * render and falls back to prose, which is the behaviour this exists to replace. The
+ * invoking/invoked strings are what the buyer sees while the search runs — worth writing,
+ * because the default is the tool's raw name.
+ */
+export const TOOL_META: Record<string, Record<string, unknown>> = {
+  search_products: {
+    'openai/outputTemplate': PRODUCT_WIDGET_URI,
+    'openai/toolInvocation/invoking': 'Searching Indian merchants',
+    'openai/toolInvocation/invoked': 'Found matching products',
+    'openai/widgetAccessible': true,
+  },
+  get_product: {
+    'openai/outputTemplate': PRODUCT_WIDGET_URI,
+    'openai/toolInvocation/invoking': 'Fetching the product',
+    'openai/toolInvocation/invoked': 'Product loaded',
+    'openai/widgetAccessible': true,
+  },
+};
+
 export function buildServer(catalog: CatalogPort, auth?: AuthContext): McpServer {
   const server = new McpServer(
     { name: 'catalograil', version: '0.1.0' },
@@ -46,12 +70,19 @@ export function buildServer(catalog: CatalogPort, auth?: AuthContext): McpServer
   server.tool(
     'search_products',
     'Find products by need, budget, delivery time, attributes or an image. Returns at most ' +
-      '5 results, each with live price, stock and a delivery estimate. When nothing matches, ' +
-      'returns a reason sentence you should state as-is rather than explaining away.',
+      '5 results, each with live price, stock, a delivery estimate, an `image_url` and a ' +
+      '`product_url`. When nothing matches, returns a reason sentence you should state as-is ' +
+      'rather than explaining away.\n\n' +
+      'Results come with a rendered card view. Where that renders, do not restate what is ' +
+      'already on screen — add what is not: which one fits what they asked for and why. ' +
+      'Where it does not, give each product its image as a markdown image, its name linked ' +
+      'to `product_url`, then price, stock and delivery — never a bare paragraph of prose. ' +
+      'To buy, call create_checkout for a guest link, or place_order if they have connected ' +
+      'their account.',
     searchProductsSchema,
     async (input) => {
       const result = await catalog.search(input);
-      return json(result);
+      return rendered(result as unknown as Record<string, unknown>);
     },
   );
 
@@ -61,7 +92,7 @@ export function buildServer(catalog: CatalogPort, auth?: AuthContext): McpServer
       'images, merchant profile and policy summaries. Use after search_products when the ' +
       'buyer asks about a specific item, sizes, or availability.',
     getProductSchema,
-    async (input) => json(await catalog.getProduct(input)),
+    async (input) => rendered((await catalog.getProduct(input)) as Record<string, unknown>),
   );
 
   server.tool(
@@ -167,4 +198,34 @@ function requireToken(auth: AuthContext | undefined, scope: string): string {
  */
 function json(payload: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }] };
+}
+
+/**
+ * A result that a client can *render* as well as read.
+ *
+ * Three representations of the same facts, because three kinds of client will read this and
+ * none of them can be relied on to support the others:
+ *
+ * - `content[0]`, the JSON text block, is what the model quotes from. It is never dropped:
+ *   an assistant that cannot draw the widget must still be able to answer the question.
+ * - `structuredContent` is what ChatGPT hands to the template on `window.openai.toolOutput`.
+ * - `content[1]`, the embedded `ui://` resource, is the whole widget with the data already
+ *   inside it, for MCP-UI clients that render a resource block inline.
+ */
+function rendered(payload: Record<string, unknown>) {
+  return {
+    content: [
+      { type: 'text' as const, text: JSON.stringify(payload, null, 2) },
+      {
+        type: 'resource' as const,
+        resource: {
+          uri: PRODUCT_WIDGET_URI,
+          mimeType: 'text/html',
+          text: renderWidget(payload),
+        },
+      },
+    ],
+    structuredContent: payload,
+    _meta: { 'openai/outputTemplate': PRODUCT_WIDGET_URI },
+  };
 }
