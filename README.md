@@ -377,9 +377,15 @@ worker writes to it; database triggers keep the denormalised columns honest.
 **Prerequisites:** Node 20+, pnpm 11, PostgreSQL 18 with pgvector, and AWS credentials if you
 intend to deploy.
 
+> **On the two names.** The product is Conciergent. The workspace scope (`@catalograil/*`),
+> the CloudFormation stacks and every deployed AWS resource are still named `catalograil`,
+> which is what the project was called first. They are load-bearing — renaming a stack
+> replaces the database behind it — so they stay until there is a reason worth that. If you
+> see both names, nothing is broken.
+
 ```bash
-git clone https://github.com/gauravk16in/catalograil.git
-cd catalograil
+git clone https://github.com/gauravk16in/conciergent.git
+cd conciergent
 pnpm install
 
 # A local Postgres stands in for Aurora

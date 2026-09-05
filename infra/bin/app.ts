@@ -128,7 +128,7 @@ const mcp = new McpStack(app, stackName('Mcp', config), {
  * making it opt-in keeps `cdk synth` working for everyone, including CI with no token.
  */
 const githubTokenSecretName = process.env.GITHUB_TOKEN_SECRET_NAME;
-const githubRepository = process.env.GITHUB_REPOSITORY ?? 'gauravk16in/catalograil';
+const githubRepository = process.env.GITHUB_REPOSITORY ?? 'gauravk16in/conciergent';
 
 if (githubTokenSecretName) {
   new FrontendStack(app, stackName('Frontend', config), {
