@@ -104,7 +104,8 @@ marketplaces that could put you there take a commission and stand between you an
 ### The Buyer's Journey
 
 1. **Connect** — copy the MCP URL from Conciergent into Claude or ChatGPT's connector
-   settings. (Optional: browsing works with no account at all.)
+   settings. The assistant is refused until it authenticates, which is what makes it show you
+   a sign-in prompt rather than connecting silently as nobody.
 2. **Approve** — you are sent to a Conciergent sign-in page and asked to grant three separate
    permissions: see your addresses, see your orders, place orders for you.
 3. **Ask** — "a formal shirt for an office in Chennai, under ₹2,500". The assistant calls
@@ -241,7 +242,7 @@ REST over an HTTP API Gateway. Every boundary validates with a Zod schema before
 touches the database.
 
 ```
-POST /search                       Public. Browsing needs no account.
+POST /search                       Public on the web API. The MCP surface requires an account.
 POST /product                      Public product detail.
 GET  /merchant/products            Merchant's own catalogue.
 POST /merchant/products            Create, including a full variant matrix.

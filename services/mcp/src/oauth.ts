@@ -12,6 +12,16 @@ import { AppError } from '@catalograil/core';
  * bearer token an assistant presents — and delegates everything else.
  */
 
+/** Everything an assistant may be granted. Listed once: the two metadata documents and the
+ * registration response must agree, and they drift the moment they are written out twice. */
+const SCOPES = [
+  'openid',
+  'email',
+  'catalograil/addresses.read',
+  'catalograil/orders.read',
+  'catalograil/orders.write',
+] as const;
+
 export interface OAuthConfig {
   readonly issuer: string;
   readonly clientId: string;
@@ -31,13 +41,7 @@ export function protectedResourceMetadata(config: OAuthConfig): Record<string, u
   return {
     resource: config.resourceUrl,
     authorization_servers: [config.issuer],
-    scopes_supported: [
-      'openid',
-      'email',
-      'catalograil/addresses.read',
-      'catalograil/orders.read',
-      'catalograil/orders.write',
-    ],
+    scopes_supported: [...SCOPES],
     bearer_methods_supported: ['header'],
   };
 }
@@ -65,13 +69,46 @@ export function authorizationServerMetadata(config: OAuthConfig): Record<string,
     // the interception this whole exchange exists to prevent.
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none'],
-    scopes_supported: [
-      'openid',
-      'email',
-      'catalograil/addresses.read',
-      'catalograil/orders.read',
-      'catalograil/orders.write',
-    ],
+    /**
+     * Dynamic client registration, which Cognito does not do and Claude will not connect
+     * without. See `registeredClient` — the endpoint is ours and hands back the one app
+     * client that already exists.
+     */
+    registration_endpoint: `${config.resourceUrl.replace(/\/$/, '')}/register`,
+    scopes_supported: [...SCOPES],
+  };
+}
+
+/**
+ * `POST /register` — RFC 7591, answered with a client that was registered long ago.
+ *
+ * Claude and ChatGPT will not start an OAuth flow against a server whose metadata has no
+ * `registration_endpoint`: they have no client id and no way to ask for one, so the connector
+ * is added with no authentication at all and every personal tool fails. Cognito has no
+ * dynamic registration to proxy to, and its app client cannot accept a redirect URI it was
+ * not deployed with anyway.
+ *
+ * So this returns the existing public PKCE client and echoes back the redirect URIs the
+ * caller asked for. That is not a security hole being papered over: the redirect URIs Cognito
+ * will actually honour are fixed in the user pool, so a caller that asks for its own is
+ * refused at the authorize step regardless of what this says here.
+ */
+export function registeredClient(
+  config: OAuthConfig,
+  request: { redirect_uris?: unknown; client_name?: unknown } | null,
+): Record<string, unknown> {
+  const redirectUris = Array.isArray(request?.redirect_uris) ? request.redirect_uris : [];
+  return {
+    client_id: config.clientId,
+    // No secret: this is a public client and the flow is PKCE. Issuing one would imply a
+    // confidential client and invite a caller to send it where it does not belong.
+    client_id_issued_at: Math.floor(Date.now() / 1000),
+    redirect_uris: redirectUris,
+    ...(typeof request?.client_name === 'string' ? { client_name: request.client_name } : {}),
+    grant_types: ['authorization_code', 'refresh_token'],
+    response_types: ['code'],
+    token_endpoint_auth_method: 'none',
+    scope: SCOPES.join(' '),
   };
 }
 

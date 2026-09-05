@@ -11,10 +11,12 @@ import {
   authorizationServerMetadata,
   connectRequired,
   protectedResourceMetadata,
+  registeredClient,
   requireScope,
   type OAuthConfig,
   type VerifiedCaller,
 } from './oauth.js';
+import { z } from 'zod';
 import { SERVER_DESCRIPTION } from './tools.js';
 
 const logger = new Logger({ serviceName: 'mcp' });
@@ -151,6 +153,22 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       return json(200, authorizationServerMetadata(oauth(event).config));
     }
 
+    /**
+     * Dynamic client registration (RFC 7591).
+     *
+     * Answered here rather than proxied, because Cognito has no such endpoint. Without it an
+     * assistant has no client id, cannot start an authorization code flow, and adds the
+     * connector as anonymous — which is exactly the "it never asked me to log in" report.
+     */
+    if (method === 'POST' && path.endsWith('/register')) {
+      const registration = event.body
+        ? (JSON.parse(
+            event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString('utf8') : event.body,
+          ) as { redirect_uris?: unknown; client_name?: unknown })
+        : null;
+      return json(201, registeredClient(oauth(event).config, registration));
+    }
+
     // A GET is how a connector probes for liveness before it will attempt a session.
     if (method === 'GET') {
       return json(200, {
@@ -171,6 +189,25 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
     if (!body || body.jsonrpc !== '2.0') {
       return json(400, rpcError(body?.id ?? null, -32600, 'Not a JSON-RPC 2.0 request.'));
+    }
+
+    /**
+     * The connect-time challenge, and the reason a buyer ever sees a login screen.
+     *
+     * An assistant starts OAuth when it is refused, and never before. Leaving `initialize`
+     * and `tools/list` open meant Claude completed its handshake, listed the tools, showed
+     * the connector as connected, and only discovered there was an account to sign into when
+     * a personal tool failed mid-conversation — by which point it had already told the buyer
+     * something else. So the handshake itself is challenged.
+     *
+     * The cost is real and deliberate: there is no anonymous browsing through MCP any more.
+     * Search stays public on the web API, where a session can exist without an account; here
+     * every caller is someone who has approved what their assistant may do.
+     */
+    const authorizationHeader = event.headers.authorization ?? event.headers.Authorization;
+    if (!authorizationHeader && CHALLENGED_METHODS.has(body.method)) {
+      logger.info('Unauthenticated request challenged', { rpcMethod: body.method });
+      return unauthorized(event, body.id ?? null);
     }
 
     /**
@@ -212,12 +249,12 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     /**
      * The buyer's token, verified once per request and shared with the tools that need it.
      *
-     * Verification is lazy: the read-only tools work without any account at all, and making
-     * every anonymous search pay a JWKS fetch and a signature check would be a real cost for
-     * a check most calls do not need.
+     * Only tool calls pay for it. The handshake is challenged on a missing header alone,
+     * which costs nothing; a signature check and a JWKS fetch are worth doing once a caller
+     * is about to act, and the scopes it yields only mean anything there.
      */
     let verified: VerifiedCaller | null | undefined;
-    const authorization = event.headers.authorization ?? event.headers.Authorization;
+    const authorization = authorizationHeader;
 
     const authContext: AuthContext = {
       token: () => (authorization?.startsWith('Bearer ') ? authorization.slice(7).trim() : null),
@@ -256,23 +293,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
      * buyer if the connector does not.
      */
     if ((err as { code?: string }).code === 'UNAUTHENTICATED') {
-      return {
-        statusCode: 401,
-        headers: {
-          'content-type': 'application/json',
-          'www-authenticate': `Bearer resource_metadata="${publicUrl(event)}/.well-known/oauth-protected-resource"`,
-        },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: null,
-          result: {
-            content: [
-              { type: 'text', text: JSON.stringify(connectRequired(publicUrl(event))) },
-            ],
-            isError: true,
-          },
-        }),
-      };
+      return unauthorized(event, null);
     }
 
     return json(200, rpcError(null, -32603, err instanceof Error ? err.message : 'Internal error.'));
@@ -362,64 +383,80 @@ interface RegisteredTool {
 }
 
 /**
- * Zod to JSON Schema, minimally.
+ * Zod to JSON Schema.
  *
- * A model reads the descriptions far more than the types, so this deliberately carries
- * every `.describe()` through and keeps type inference shallow — a precise schema with the
- * descriptions dropped would be worse for tool selection than a loose one that keeps them.
+ * This was hand-rolled against Zod 3's `_def.typeName`, which Zod 4 does not have. Every
+ * field therefore fell through to `type: "string"` and none were marked optional — so the
+ * tool list told Claude that ten string parameters were all required, and Claude did the
+ * only thing it could: sent `"5"` for `limit`, `"true"` for `in_stock_only`, and `""` for
+ * every optional it had nothing to say about. The connector looked broken. It was being
+ * told the wrong shape.
+ *
+ * Zod ships its own converter now, so use it. `io: 'input'` matters — these schemas coerce
+ * and default, and the model needs the shape it should *send*, not the shape a handler
+ * receives. `required` is computed by asking each field whether it tolerates being absent,
+ * which is the only definition that stays true through preprocess and pipe wrappers.
  */
-function toJsonSchema(schema?: RegisteredTool['inputSchema']): Record<string, unknown> {
-  const shape = (schema as unknown as { shape?: Record<string, ZodLike> })?.shape ?? {};
-  const properties: Record<string, unknown> = {};
-  const required: string[] = [];
+export function toJsonSchema(schema?: RegisteredTool['inputSchema']): Record<string, unknown> {
+  const shape = (schema as unknown as { shape?: Record<string, ZodField> })?.shape ?? {};
+  const { $schema: _ignored, ...json } = z.toJSONSchema(z.object(shape as never), {
+    io: 'input',
+    unrepresentable: 'any',
+  }) as Record<string, unknown>;
 
-  for (const [key, field] of Object.entries(shape)) {
-    const def = unwrap(field);
-    properties[key] = {
-      type: def.type,
-      ...(def.description ? { description: def.description } : {}),
-    };
-    if (!def.optional) required.push(key);
-  }
+  const required = Object.entries(shape)
+    .filter(([, field]) => !field.safeParse(undefined).success)
+    .map(([key]) => key);
 
-  return { type: 'object', properties, ...(required.length > 0 ? { required } : {}) };
+  return { ...json, type: 'object', ...(required.length > 0 ? { required } : {}) };
 }
 
-interface ZodLike {
-  _def?: { typeName?: string; description?: string; innerType?: ZodLike; defaultValue?: unknown };
-}
-
-function unwrap(field: ZodLike): { type: string; description?: string; optional: boolean } {
-  let current = field;
-  let optional = false;
-  let description = current._def?.description;
-
-  while (
-    current._def?.typeName === 'ZodOptional' ||
-    current._def?.typeName === 'ZodDefault'
-  ) {
-    optional = true;
-    current = current._def.innerType!;
-    description = description ?? current._def?.description;
-  }
-
-  const typeName = current._def?.typeName ?? '';
-  const type =
-    typeName === 'ZodNumber'
-      ? 'number'
-      : typeName === 'ZodBoolean'
-        ? 'boolean'
-        : typeName === 'ZodArray'
-          ? 'array'
-          : typeName === 'ZodRecord' || typeName === 'ZodObject'
-            ? 'object'
-            : 'string';
-
-  return { type, ...(description ? { description } : {}), optional };
+interface ZodField {
+  safeParse(input: unknown): { success: boolean };
 }
 
 function rpcError(id: string | number | null, code: number, message: string) {
   return { jsonrpc: '2.0', id, error: { code, message } };
+}
+
+/** The JSON-RPC methods that require an account before they will answer. */
+const CHALLENGED_METHODS = new Set(['initialize', 'tools/list', 'tools/call', 'resources/list', 'prompts/list']);
+
+/**
+ * A 401 carrying both halves of the answer.
+ *
+ * The `WWW-Authenticate` header with `resource_metadata` is what a connector reads to start
+ * the OAuth flow on its own; the JSON-RPC body is what a model reads if the connector does
+ * not, so it can tell the buyer to connect their account instead of inventing a reason.
+ *
+ * A caveat worth knowing before debugging this from a `curl -i`: a Lambda Function URL
+ * rewrites this header to `x-amzn-Remapped-www-authenticate` on the way out, so the client
+ * never sees it under the name the spec names. Discovery still works, because a client that
+ * gets a 401 falls back to fetching `/.well-known/oauth-protected-resource` from the server
+ * URL it was given — which is served here, one hop from the URL the buyer pasted. The header
+ * is sent anyway, for the day this sits behind something that does not rewrite it.
+ */
+function unauthorized(
+  event: APIGatewayProxyEventV2,
+  id: string | number | null,
+): APIGatewayProxyResultV2 {
+  const resource = publicUrl(event);
+  return {
+    statusCode: 401,
+    headers: {
+      'content-type': 'application/json',
+      'www-authenticate': `Bearer resource_metadata="${resource}/.well-known/oauth-protected-resource"`,
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: -32001,
+        message: 'Connect your Conciergent account to use this.',
+        data: connectRequired(resource),
+      },
+    }),
+  };
 }
 
 function json(statusCode: number, body: unknown): APIGatewayProxyResultV2 {

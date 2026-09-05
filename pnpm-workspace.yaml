@@ -8,3 +8,6 @@ packages:
 
 allowBuilds:
   esbuild: true
+  # Its postinstall only builds a native binding when no prebuilt platform package matches;
+  # one does here, so there is nothing to gain from running it.
+  unrs-resolver: false
