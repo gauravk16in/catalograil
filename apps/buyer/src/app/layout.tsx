@@ -5,7 +5,7 @@ import { AuthProvider } from '../lib/auth';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'CatalogRail',
+  title: 'Conciergent',
   description: 'Buy directly from Indian merchants, from inside your chat.',
 };
 
@@ -17,7 +17,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <header className="border-b border-[hsl(var(--border))] bg-[hsl(var(--bg))]">
             <div className="mx-auto flex h-14 max-w-4xl items-center gap-6 px-6">
               <Link href="/" className="text-sm font-semibold tracking-tight">
-                CatalogRail
+                Conciergent
               </Link>
               <Nav />
             </div>
