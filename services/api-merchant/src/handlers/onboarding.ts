@@ -28,6 +28,7 @@ import {
 } from '@catalograil/razorpay';
 import { eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { reconcileMerchantStatus } from './activation.js';
 
 /**
  * Merchant onboarding: OAuth (T1.6), profile and capabilities (T1.8), policies (T1.9).
@@ -44,15 +45,27 @@ const sqlExcluded = (column: string) => sql.raw(`excluded.${column}`);
 const sqlIncrement = (column: string) => sql.raw(`${column} + 1`);
 const sqlZero = () => sql.raw('0');
 
-export interface OnboardingDeps {
+/**
+ * What policy submission actually needs.
+ *
+ * Narrower than `OnboardingDeps` on purpose. Policies have nothing to do with Razorpay
+ * OAuth, and requiring the full set meant this endpoint could not be routed without
+ * constructing an OAuth config and a KMS cipher it never touches — which is why the
+ * dashboard's policy page returned "No route for POST /merchant/policies" long after the
+ * handler behind it was written and tested.
+ */
+export interface PolicyDeps {
   readonly db: Database;
+  readonly policyFetcher: PolicyFetcher;
+  readonly policyExtractor: PolicyExtractor;
+  readonly clock: Clock;
+}
+
+export interface OnboardingDeps extends PolicyDeps {
   readonly oauthConfig: OAuthConfig;
   readonly stateStore: OAuthStateStore;
   /** Built per merchant, since the cipher binds to their id as encryption context. */
   readonly cipherFor: (merchantId: string) => TokenCipher;
-  readonly policyFetcher: PolicyFetcher;
-  readonly policyExtractor: PolicyExtractor;
-  readonly clock: Clock;
 }
 
 // ─── T1.6: OAuth ───────────────────────────────────────────────────────────────────
@@ -290,17 +303,26 @@ export interface PolicySubmissionResult {
   readonly status: string;
   readonly failures: string[];
   readonly extracted?: ExtractedPolicies;
+  /**
+   * Anything still keeping the merchant out of search after this succeeded.
+   *
+   * Accepted policies no longer imply an active merchant, so a merchant whose submission
+   * worked but who has not connected Razorpay needs to be told that here rather than
+   * discovering it as an empty search result.
+   */
+  readonly blockers?: string[];
 }
 
 /**
- * Validates the three URLs, extracts their terms, and activates the merchant if they pass.
+ * Validates the three URLs, extracts their terms, and re-evaluates whether the merchant can
+ * be visible to buyers.
  *
  * The order matters: fetch first, and only call the extractor if every page resolved. A
  * merchant with a 404 gets a specific, actionable error in about a second rather than
  * waiting on a model call that was never going to produce anything.
  */
 export async function submitPolicies(
-  deps: OnboardingDeps,
+  deps: PolicyDeps,
   merchantId: string,
   body: unknown,
 ): Promise<PolicySubmissionResult> {
@@ -341,20 +363,29 @@ export async function submitPolicies(
   await recordPolicyCheck(deps, merchantId, parsed.data, extracted, 'ok', false);
 
   /**
-   * Activation happens here, and only here. Policies are the last gate, so passing them is
-   * what makes a merchant's catalogue visible — and the trigger from T1.16 propagates the
-   * status change to searchable_units in the same transaction.
+   * Policies are one of two gates, not the last one.
+   *
+   * They used to activate a merchant outright, which was right when Razorpay OAuth was step
+   * one — anyone reaching this point necessarily had a token. DC1 and DC2 made identity and
+   * payment independent, so that stopped holding silently: a merchant could accept policies
+   * with no payment connection and have their catalogue go live, where a buyer would pick a
+   * product and then be unable to pay for it.
    */
-  await deps.db
-    .update(merchants)
-    .set({ status: 'active', onboardedAt: deps.clock.now(), updatedAt: deps.clock.now() })
-    .where(eq(merchants.id, merchantId));
+  const activation = await reconcileMerchantStatus(deps.db, merchantId, deps.clock.now());
 
-  return { accepted: true, status: 'active', failures: [], extracted };
+  return {
+    accepted: true,
+    status: activation.status,
+    failures: [],
+    extracted,
+    // Named so the dashboard can say what is still needed rather than leaving a merchant
+    // wondering why "accepted" did not make them live.
+    blockers: activation.blockers,
+  };
 }
 
 async function recordPolicyCheck(
-  deps: OnboardingDeps,
+  deps: PolicyDeps,
   merchantId: string,
   urls: z.infer<typeof policiesSchema>,
   extracted: ExtractedPolicies | null,
