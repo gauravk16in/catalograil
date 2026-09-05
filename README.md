@@ -6,9 +6,9 @@
 
 ## Live Experiences
 
-- **Landing page:** [Discover Conciergent](https://conciergent.vercel.app/)
-- **Buyer experience:** [Find the right product](https://main.d1ypcvqs4kcq44.amplifyapp.com/)
-- **Merchant dashboard:** [Manage inventory](https://main.d21osrv849o4of.amplifyapp.com/inventory)
+- **Landing page:** [https://conciergent.vercel.app/](https://conciergent.vercel.app/)
+- **Buyer experience:** [https://main.d1ypcvqs4kcq44.amplifyapp.com/](https://main.d1ypcvqs4kcq44.amplifyapp.com/)
+- **Merchant dashboard:** [https://main.d21osrv849o4of.amplifyapp.com/inventory](https://main.d21osrv849o4of.amplifyapp.com/inventory)
 
 ---
 
