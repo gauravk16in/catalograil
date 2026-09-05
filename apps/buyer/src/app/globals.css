@@ -35,51 +35,8 @@ body {
   outline-offset: 2px;
 }
 
-/* ── The travelling border gradient (components/glow.tsx) ──────────────────────
-   One conic gradient rotated by a custom property, so the animation runs on the
-   compositor rather than repainting. The `@property` declaration is what makes the
-   angle interpolable at all — without it the browser treats it as a string and the
-   gradient jumps instead of turning. */
-@property --cr-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
-}
-
-.cr-glow {
-  position: relative;
-  border-radius: 0.85rem;
-  padding: 1.5px;
-  background: hsl(var(--border));
-  transition: background 200ms ease;
-}
-
-.cr-glow-inner {
-  border-radius: calc(0.85rem - 1.5px);
-  background: hsl(var(--bg));
-  height: 100%;
-}
-
-.cr-glow-on {
-  background: conic-gradient(
-    from var(--cr-angle),
-    hsl(var(--accent)) 0deg,
-    hsl(var(--ok)) 90deg,
-    hsl(var(--accent)) 180deg,
-    hsl(var(--warn)) 270deg,
-    hsl(var(--accent)) 360deg
-  );
-  animation: cr-spin 2.4s linear infinite;
-}
-
-@keyframes cr-spin {
-  to {
-    --cr-angle: 360deg;
-  }
-}
-
-/* Results arrive one after another rather than all at once — the search genuinely
-   takes a moment, and a stagger reads as the answer assembling instead of a jump cut. */
+/* Answers arrive rather than appear. The search genuinely takes a moment, and a short rise
+   reads as the reply assembling — which is what it is — instead of a jump cut. */
 @keyframes cr-rise {
   from {
     opacity: 0;
@@ -96,11 +53,7 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  /* Decoration is exactly what should stop for someone who asked for less movement.
-     The border stays visible, it simply stops turning. */
-  .cr-glow-on {
-    animation: none;
-  }
+  /* Decoration is exactly what should stop for someone who asked for less movement. */
   .cr-rise {
     animation: none;
   }

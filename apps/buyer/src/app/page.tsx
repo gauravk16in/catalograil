@@ -2,340 +2,354 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, describeError } from '../lib/api';
-import { formatPaise, relativeTime } from '../lib/format';
-import { Badge, Button, Card, Empty, ErrorNote } from '../components/ui';
-import { ProductImage } from '../components/product-image';
-import { ProductDetail } from '../components/product-detail';
-import { Glow } from '../components/glow';
-import { ResultSkeleton, SearchStage } from '../components/search-stage';
-import { FilterBar, type Filters } from '../components/filters';
+import { useAuth } from '../lib/auth';
+import { formatPaise } from '../lib/format';
+import type { SearchResponse, SearchResultItem } from '../lib/types';
+import { PromptInput, Suggestions } from '../components/chat/prompt-input';
+import { ProductCard } from '../components/chat/product-card';
+import { BuyFlow } from '../components/chat/buy-flow';
 
 /**
- * The buyer-facing search surface.
+ * The ask surface.
  *
- * This is the same `/internal/search` an assistant calls through MCP, rendered for a
- * person. Keeping them on one endpoint matters: if the web surface and the assistant ever
- * disagreed about what a query returns, the assistant is the one nobody can debug.
+ * This was a search box with a results grid under it, and it worked, and it was the wrong
+ * shape. Someone shopping through an assistant is having a conversation — they say what
+ * they need, look at what comes back, change their mind, and buy — and a page that answers
+ * in a static grid makes them do the conversational part in their head.
  *
- * Two things are shown here that a conventional storefront omits, and both are deliberate.
- * Every price carries when it was last known true (rule 7), and every result says why it
- * matched — because a buyer being answered by an AI has no way to check either otherwise.
+ * So the thread is the surface. A question goes in, cards come back *in* the thread, the
+ * refinements are things you can tap rather than rephrase, and buying happens where you are
+ * rather than on a checkout page you had to leave for.
+ *
+ * **Nothing here is generated.** There is no model in this path: the sentence above each set
+ * of results is composed from the results themselves — a count, a real cheapest price, a
+ * real fastest delivery — and when nothing matches it states the API's own
+ * `noResultsReason` verbatim. A shopping assistant that improvises a reassuring sentence
+ * about products it did not find is the exact failure this whole system is built to avoid.
  */
 
-export interface SearchResultItem {
-  id: string;
-  /** The product, for opening detail. `id` is the variant, which is what gets bought. */
-  productId: string;
-  name: string;
-  brand?: string;
-  displayPrice?: string;
-  pricePaise?: string;
-  priceAsOf: string;
-  availability: 'in_stock' | 'out_of_stock' | 'unknown';
-  deliveryEstimate?: string;
-  options?: Record<string, string>;
-  images: string[];
-  whyThisMatched: string;
-  merchant: {
-    id: string;
-    name: string;
-    city?: string;
-    trust: { score: number; newMerchant: boolean; signals: string[] };
-  };
+interface Filters {
+  maxPriceInr?: number;
+  maxDeliveryDays?: number;
+  inStockOnly?: boolean;
 }
 
-interface SearchResponse {
-  results: SearchResultItem[];
-  noResultsReason?: string;
-  tookMs: number;
-}
+type Turn =
+  | { kind: 'ask'; id: string; text: string }
+  | {
+      kind: 'answer';
+      id: string;
+      query: string;
+      filters: Filters;
+      loading: boolean;
+      response?: SearchResponse;
+      error?: string;
+    }
+  | { kind: 'buy'; id: string; item: SearchResultItem; variantId: string; variantLabel: string };
 
-const EXAMPLES = [
-  'a formal shirt for an office in Chennai',
-  'dashcam that records at night',
-  'deep clean my 2BHK before Diwali',
+const SUGGESTIONS = [
+  { label: 'Gift', prompt: 'a thoughtful gift under ₹2,000 for someone who cooks' },
+  { label: 'Food', prompt: 'snacks and dry fruits for a house full of guests' },
+  { label: 'Travel', prompt: 'a cabin bag that survives Indian airports' },
+  { label: 'Services', prompt: 'deep clean my 2BHK before Diwali' },
 ];
 
-export default function BuyerSearch() {
-  const [query, setQuery] = useState('');
-  const [response, setResponse] = useState<SearchResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [opened, setOpened] = useState<SearchResultItem | null>(null);
-  const [filters, setFilters] = useState<Filters>({});
-  const [focused, setFocused] = useState(false);
-  const [cursor, setCursor] = useState(-1);
-  const lastQuery = useRef('');
+let counter = 0;
+const nextId = () => `t${++counter}`;
 
-  const run = useCallback(async (value: string, withFilters: Filters) => {
-    if (!value.trim()) return;
-    lastQuery.current = value;
-    setQuery(value);
-    setLoading(true);
-    setError(null);
-    setCursor(-1);
+export default function AskPage() {
+  const { status } = useAuth();
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [name, setName] = useState<string | null>(null);
+  const bottom = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (status !== 'signedIn') return;
+    void api
+      .get<{ name: string | null }>('/buyer/me')
+      .then((me) => setName(firstName(me.name)))
+      .catch(() => undefined);
+  }, [status]);
+
+  // The newest turn is the one being read, so it is the one kept in view.
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [turns]);
+
+  const ask = useCallback(async (text: string, filters: Filters = {}) => {
+    const answerId = nextId();
+    setBusy(true);
+    setTurns((prev) => [
+      ...prev,
+      { kind: 'ask', id: nextId(), text },
+      { kind: 'answer', id: answerId, query: text, filters, loading: true },
+    ]);
 
     try {
-      setResponse(
-        await api.post<SearchResponse>('/search', {
-          query: value,
-          filters: withFilters,
-          limit: 10,
-          source: 'web',
-        }),
+      const response = await api.post<SearchResponse>('/search', {
+        query: text,
+        filters,
+        limit: 10,
+        source: 'web',
+      });
+      setTurns((prev) =>
+        prev.map((t) => (t.id === answerId ? { ...t, loading: false, response } : t)),
       );
     } catch (err) {
-      setError(describeError(err));
-      setResponse(null);
+      setTurns((prev) =>
+        prev.map((t) =>
+          t.id === answerId ? { ...t, loading: false, error: describeError(err) } : t,
+        ),
+      );
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   }, []);
 
-  /**
-   * Changing a filter re-runs the search immediately.
-   *
-   * That immediacy is the point of the controls: a buyer drops the budget and watches items
-   * disappear, which teaches in one interaction what a paragraph of copy about hard
-   * exclusions could not.
-   */
-  useEffect(() => {
-    if (!lastQuery.current) return;
-    void run(lastQuery.current, filters);
-    // Intentionally keyed on `filters` alone: `run` is stable via useCallback, and including
-    // it would only add noise.
-  }, [filters, run]);
+  const buy = useCallback(
+    (choice: { item: SearchResultItem; variantId: string; label: string }) => {
+      setTurns((prev) => [
+        ...prev,
+        {
+          kind: 'buy',
+          id: nextId(),
+          item: choice.item,
+          variantId: choice.variantId,
+          variantLabel: choice.label,
+        },
+      ]);
+    },
+    [],
+  );
 
-  /**
-   * `?product=<id>` opens straight to that product.
-   *
-   * This is the link an assistant hands out alongside a search result — a buyer being shown
-   * a card inside Claude needs somewhere to go that shows them the same item, the merchant's
-   * own policy text and a way to pay, without making them search again for the thing they
-   * were just looking at.
-   *
-   * A stub is enough to open the panel: it fetches the real detail from `productId` itself,
-   * and having no variant id simply means it defaults to the first one rather than the
-   * matched one.
-   */
-  useEffect(() => {
-    const productId = new URLSearchParams(window.location.search).get('product');
-    if (!productId) return;
-
-    setOpened({
-      id: '',
-      productId,
-      name: '',
-      priceAsOf: new Date().toISOString(),
-      availability: 'unknown',
-      images: [],
-      whyThisMatched: '',
-      merchant: { id: '', name: '', trust: { score: 0, newMerchant: true, signals: [] } },
-    });
-  }, []);
-
-  /**
-   * Arrow keys move through results, Enter opens one.
-   *
-   * Someone comparing four shirts should not have to move their hand to the mouse between
-   * each — and it costs nothing to support.
-   */
-  useEffect(() => {
-    function onKey(event: KeyboardEvent) {
-      const results = response?.results ?? [];
-      if (results.length === 0 || opened) return;
-
-      if (event.key === 'ArrowDown') {
-        event.preventDefault();
-        setCursor((c) => Math.min(c + 1, results.length - 1));
-      } else if (event.key === 'ArrowUp') {
-        event.preventDefault();
-        setCursor((c) => Math.max(c - 1, -1));
-      } else if (event.key === 'Enter' && cursor >= 0) {
-        setOpened(results[cursor] ?? null);
-      }
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [response, cursor, opened]);
+  const empty = turns.length === 0;
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Describe what you need</h1>
-        <p className="mt-1.5 text-sm text-[hsl(var(--muted))]">
-          Not a product name — what it is for. The same search an AI assistant runs on your behalf.
-        </p>
-      </div>
-
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          void run(query, filters);
-        }}
-        className="space-y-3"
-      >
-        {/* The border lights while the box has focus or a search is running — the one place
-            movement earns its keep, because it marks where the buyer is typing. */}
-        <Glow active={focused || loading}>
-          <div className="flex items-center gap-2 px-2 py-1.5">
-            <input
-              className="w-full bg-transparent px-2 py-2 text-base outline-none placeholder:text-[hsl(var(--muted))]"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onFocus={() => setFocused(true)}
-              onBlur={() => setFocused(false)}
-              placeholder="something to wear to a friend's wedding"
-              aria-label="Describe what you need"
-            />
-            <Button type="submit" disabled={loading || !query.trim()}>
-              {loading ? 'Searching' : 'Search'}
-            </Button>
-          </div>
-        </Glow>
-
-        <FilterBar filters={filters} onChange={setFilters} disabled={loading} />
-      </form>
-
-      {!response && !loading && (
-        <div className="flex flex-wrap gap-2">
-          {EXAMPLES.map((example) => (
-            <button
-              key={example}
-              onClick={() => void run(example, filters)}
-              className="rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--bg))] px-3 py-1.5 text-sm text-[hsl(var(--muted))] hover:text-[hsl(var(--text))]"
-            >
-              {example}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {error && <ErrorNote>{error}</ErrorNote>}
-
-      {loading && (
-        <div className="space-y-3">
-          <SearchStage query={query} />
-          {[0, 1, 2].map((i) => (
-            <ResultSkeleton key={i} />
-          ))}
-        </div>
-      )}
-
-      {opened && <ProductDetail result={opened} onClose={() => setOpened(null)} />}
-
-      {response &&
-        !loading &&
-        (response.results.length === 0 ? (
-          <Card>
-            {/* Rule 8's sentence, shown as written rather than replaced with "no results". */}
-            <Empty title="Nothing matched" reason={response.noResultsReason} />
-          </Card>
-        ) : (
-          <div className="space-y-3">
-            <p className="text-xs text-[hsl(var(--muted))]">
-              {response.results.length} results in {response.tookMs}ms
-              {response.results.length > 1 && ' · ↑↓ to move, Enter to open'}
-            </p>
-            {response.results.map((result, index) => (
-              <div
-                key={result.id}
-                className="cr-rise"
-                // Staggered, so the answer reads as assembling rather than appearing whole.
-                style={{ animationDelay: `${Math.min(index, 6) * 45}ms` }}
-              >
-                <ResultCard
-                  result={result}
-                  onOpen={setOpened}
-                  selected={index === cursor}
-                />
-              </div>
+    <div className="mx-auto flex min-h-screen w-full max-w-3xl flex-col px-5">
+      {empty ? (
+        <Opening name={name} onPick={(p) => void ask(p)} busy={busy} />
+      ) : (
+        <>
+          <div className="flex-1 space-y-8 pb-40 pt-10">
+            {turns.map((turn) => (
+              <TurnView key={turn.id} turn={turn} onBuy={buy} onRefine={ask} />
             ))}
+            <div ref={bottom} />
           </div>
-        ))}
+
+          {/* Docked once the conversation exists: the input belongs at the point the next
+              thing is said, not floating in the middle of what was already answered. */}
+          <div className="fixed inset-x-0 bottom-0 z-20 bg-gradient-to-t from-[hsl(var(--surface))] via-[hsl(var(--surface))] to-transparent pb-24 pt-8">
+            <div className="mx-auto w-full max-w-3xl px-5">
+              <PromptInput onSubmit={(v) => void ask(v)} busy={busy} placeholder="Ask for something else…" />
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
-function ResultCard({
-  result,
-  onOpen,
-  selected,
+/**
+ * The first screen, which is mostly nothing.
+ *
+ * The emptiness is the design. A buyer arriving here has not decided what they want yet, and
+ * a wall of merchandising decides it for them badly — every retail homepage in existence is
+ * an argument for whatever the retailer needs to move. One question, one input, four ways in.
+ */
+function Opening({
+  name,
+  onPick,
+  busy,
 }: {
-  result: SearchResultItem;
-  onOpen: (result: SearchResultItem) => void;
-  selected?: boolean;
+  name: string | null;
+  onPick: (prompt: string) => void;
+  busy: boolean;
 }) {
   return (
-    /*
-      The whole card is the target, not a link buried in the title.
-      A buyer scanning results taps the picture or the price as readily as the name, and a
-      card that only responds in one place reads as not responding at all.
-    */
-    <Card
-      className={`overflow-hidden transition ${
-        selected
-          ? 'border-[hsl(var(--accent))] ring-2 ring-[hsl(var(--accent-soft))]'
-          : 'hover:border-[hsl(var(--text))]'
-      }`}
-    >
-      <button
-        type="button"
-        onClick={() => onOpen(result)}
-        className="flex w-full items-start gap-4 p-5 text-left"
-      >
-        <ProductImage
-          src={result.images?.[0]}
-          alt={result.name}
-          className="h-24 w-24 shrink-0 rounded-lg"
-        />
+    <div className="flex min-h-screen flex-col">
+      <div className="pt-10">
+        <p className="text-[15px] text-[hsl(var(--muted))]">{greeting()},</p>
+        {name && <p className="text-[15px] font-medium">{name}</p>}
+      </div>
 
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-sm font-medium">{result.name}</h2>
-            {result.availability === 'out_of_stock' && <Badge tone="warn">Out of stock</Badge>}
-          </div>
-
-          {result.options && Object.keys(result.options).length > 0 && (
-            <p className="mt-0.5 text-xs text-[hsl(var(--muted))]">
-              {Object.entries(result.options)
-                .map(([key, value]) => `${key}: ${value}`)
-                .join(' · ')}
-            </p>
-          )}
-
-          <p className="mt-1.5 text-sm text-[hsl(var(--muted))]">{result.whyThisMatched}</p>
-
-          {result.deliveryEstimate && (
-            <p className="mt-1 text-sm text-[hsl(var(--ok))]">{result.deliveryEstimate}</p>
-          )}
-
-          <div className="mt-3 border-t border-[hsl(var(--border))] pt-3">
-            <p className="text-sm font-medium">{result.merchant.name}</p>
-            {/*
-              Trust as statements rather than a score. "0.87" tells a buyer nothing about
-              whether to hand over money; "312 orders fulfilled" does.
-            */}
-            <ul className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
-              {result.merchant.trust.signals.map((signal) => (
-                <li key={signal} className="text-xs text-[hsl(var(--muted))]">
-                  {signal}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-
-        <div className="shrink-0 text-right">
-          <p className="text-base font-semibold tabular-nums">
-            {result.displayPrice ?? formatPaise(result.pricePaise ?? null)}
-          </p>
-          {/* Rule 7 on the buyer surface too: never a bare number. */}
-          <p className="mt-0.5 text-xs text-[hsl(var(--muted))]">
-            price as of {relativeTime(result.priceAsOf)}
+      <div className="flex flex-1 flex-col justify-center pb-32">
+        <div className="cr-rise space-y-3 text-center">
+          <h1 className="text-[34px] font-semibold tracking-tight sm:text-[40px]">Need anything?</h1>
+          <p className="mx-auto max-w-sm text-[15px] leading-relaxed text-[hsl(var(--muted))]">
+            Tell me what you&rsquo;re looking for.
+            <br />
+            I&rsquo;ll find what actually fits.
           </p>
         </div>
-      </button>
-    </Card>
+
+        <div className="mx-auto mt-10 w-full max-w-xl space-y-5">
+          <PromptInput onSubmit={onPick} busy={busy} autoFocus />
+          <Suggestions items={SUGGESTIONS} onPick={onPick} disabled={busy} />
+        </div>
+      </div>
+    </div>
   );
+}
+
+function TurnView({
+  turn,
+  onBuy,
+  onRefine,
+}: {
+  turn: Turn;
+  onBuy: (choice: { item: SearchResultItem; variantId: string; label: string }) => void;
+  onRefine: (text: string, filters: Filters) => void;
+}) {
+  if (turn.kind === 'ask') {
+    return (
+      <div className="flex justify-end">
+        <p className="max-w-[80%] rounded-2xl rounded-br-md bg-[hsl(var(--accent))] px-4 py-2.5 text-[15px] text-white">
+          {turn.text}
+        </p>
+      </div>
+    );
+  }
+
+  if (turn.kind === 'buy') {
+    return (
+      <div className="cr-rise max-w-[560px]">
+        <BuyFlow item={turn.item} variantId={turn.variantId} variantLabel={turn.variantLabel} />
+      </div>
+    );
+  }
+
+  if (turn.loading) {
+    return (
+      <div className="flex items-center gap-2 text-[15px] text-[hsl(var(--muted))]">
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[hsl(var(--muted))]" />
+        Looking through the catalogue…
+      </div>
+    );
+  }
+
+  if (turn.error) {
+    return <p className="text-[15px] text-[hsl(var(--danger))]">{turn.error}</p>;
+  }
+
+  const results = turn.response?.results ?? [];
+
+  if (results.length === 0) {
+    return (
+      <p className="max-w-[560px] text-[15px] leading-relaxed text-[hsl(var(--muted))]">
+        {/* Rule 8's sentence, stated rather than paraphrased. */}
+        {turn.response?.noResultsReason ?? 'Nothing matched that.'}
+      </p>
+    );
+  }
+
+  return (
+    <div className="cr-rise space-y-4">
+      <p className="text-[15px] leading-relaxed">{summarise(results)}</p>
+
+      {/* Horizontal, snapping, and scrollable on its own — five cards across a phone is a
+          grid nobody scrolls to the end of. */}
+      <div className="-mx-5 flex snap-x snap-mandatory gap-3 overflow-x-auto px-5 pb-2">
+        {results.map((item) => (
+          <ProductCard key={item.id} item={item} onBuy={onBuy} />
+        ))}
+      </div>
+
+      <Refinements results={results} onPick={(f) => onRefine(turn.query, { ...turn.filters, ...f })} />
+
+      <p className="text-[11px] text-[hsl(var(--muted))]">
+        {/* Rule 7. A price with no time attached is a claim about now made from data that
+            is not. */}
+        Prices and stock as of {new Date(results[0]!.priceAsOf).toLocaleTimeString('en-IN', {
+          timeZone: 'Asia/Kolkata',
+          hour: '2-digit',
+          minute: '2-digit',
+        })} IST.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * The refinements, offered as taps.
+ *
+ * Every one is a hard exclusion in the query, not a ranking nudge — an item that cannot
+ * arrive in time does not appear at all, however cheap it is. Offering them as buttons is
+ * what makes that legible: change the budget, watch things disappear, understand in one
+ * interaction what a paragraph about constraint handling could not explain.
+ */
+function Refinements({
+  results,
+  onPick,
+}: {
+  results: SearchResultItem[];
+  onPick: (filters: Filters) => void;
+}) {
+  const prices = results
+    .map((r) => (r.pricePaise ? Number(BigInt(r.pricePaise) / 100n) : null))
+    .filter((n): n is number => n !== null);
+
+  // A budget only worth offering if it would actually exclude something.
+  const median = prices.length > 0 ? prices.sort((a, b) => a - b)[Math.floor(prices.length / 2)]! : 0;
+  const budget = median > 0 ? Math.round(median / 500) * 500 : 0;
+
+  const options: { label: string; filters: Filters }[] = [
+    ...(budget > 0 ? [{ label: `Under ₹${budget.toLocaleString('en-IN')}`, filters: { maxPriceInr: budget } }] : []),
+    { label: 'Arrives in 2 days', filters: { maxDeliveryDays: 2 } },
+    { label: 'In stock only', filters: { inStockOnly: true } },
+  ];
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {options.map((option) => (
+        <button
+          key={option.label}
+          type="button"
+          onClick={() => onPick(option.filters)}
+          className="rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--bg))] px-3 py-1.5 text-[12.5px] font-medium text-[hsl(var(--muted))] transition hover:border-[hsl(var(--accent))] hover:text-[hsl(var(--text))]"
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * One sentence about the results, assembled from the results.
+ *
+ * Deliberately dull. It names a count, a real cheapest price and a real fastest delivery,
+ * all of which are on the cards below it and can be checked against them. Anything more
+ * fluent would have to come from somewhere other than the data.
+ */
+function summarise(results: SearchResultItem[]): string {
+  const count = results.length;
+  const priced = results.filter((r) => r.pricePaise);
+  const cheapest = priced.reduce<SearchResultItem | null>(
+    (best, r) => (!best || BigInt(r.pricePaise!) < BigInt(best.pricePaise!) ? r : best),
+    null,
+  );
+
+  const parts = [`${count} ${count === 1 ? 'match' : 'matches'}.`];
+  if (cheapest) parts.push(`From ${formatPaise(cheapest.pricePaise!)}.`);
+
+  const fastest = results.find((r) => r.deliveryEstimate);
+  if (fastest?.deliveryEstimate) parts.push(`Soonest ${fastest.deliveryEstimate}.`);
+
+  return parts.join(' ');
+}
+
+function greeting(): string {
+  const hour = Number(
+    new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', hour12: false }),
+  );
+  if (hour < 12) return 'Good morning';
+  if (hour < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function firstName(name: string | null): string | null {
+  const first = (name ?? '').trim().split(/\s+/)[0];
+  return first ? first : null;
 }

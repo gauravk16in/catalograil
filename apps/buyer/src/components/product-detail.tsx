@@ -5,7 +5,7 @@ import { api, describeError } from '../lib/api';
 import { formatPaise } from '../lib/format';
 import { Badge, Button, Card, ErrorNote } from './ui';
 import { ProductImage } from './product-image';
-import type { SearchResultItem } from '../app/page';
+import type { SearchResultItem } from '../lib/types';
 
 /**
  * The product panel, and the only route from browsing to buying.
