@@ -538,5 +538,16 @@ stack without it, and because the deployed Frontend still imports the API endpoi
 deploying the Api stack alone then fails on an export that is still in use.
 
 To get a deployed environment's catalogue into search, invoke the migration Lambda with
-`{"seed": true}` and then `{"skipBootstrap": true, "backfill": true}` — nothing else
-enqueues an existing catalogue for indexing.
+`{"skipBootstrap": true, "backfill": true}` — nothing else enqueues an existing catalogue
+for indexing.
+
+**Do not run `{"seed": true}` against an environment that has real merchants.** It inserts
+three demo merchants and 61 products, and against a live catalogue that means a buyer
+searching sees invented products beside genuine ones with no way to tell them apart. The
+dev environment was seeded and then purged for exactly that reason; seeding is for an empty
+environment only.
+
+To remove them again if they reappear: `{"skipBootstrap": true, "purgeDemo": true}` reports
+what it would delete and changes nothing, and adding `"confirm": true` performs it. It
+refuses to touch a merchant that has orders, whatever their id — `orders.merchant_id` has no
+cascade on purpose, because a buyer's history must not disappear with a merchant row.

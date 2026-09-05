@@ -45,6 +45,17 @@ interface MigrationEvent {
    * pass over unchanged products re-embeds nothing (rule 9).
    */
   readonly backfill?: boolean;
+  /**
+   * Removes the demo catalogue seeded by `seed: true`, leaving only what merchants
+   * themselves uploaded.
+   *
+   * Destructive and not reversible without re-seeding, so it reports what it *would* delete
+   * unless `confirm` is also set. The three seeded merchants have fixed ids and RFC 2606
+   * `.example` addresses, which is what makes "demo" a fact here rather than a guess — a
+   * real merchant cannot have either.
+   */
+  readonly purgeDemo?: boolean;
+  readonly confirm?: boolean;
 }
 
 export interface MigrationResult {
@@ -53,6 +64,18 @@ export interface MigrationResult {
   readonly migrationsApplied: boolean;
   readonly seeded: boolean;
   readonly backfilled: number;
+  readonly purged?: PurgeResult;
+}
+
+export interface PurgeResult {
+  readonly dryRun: boolean;
+  readonly merchants: { id: string; name: string; email: string }[];
+  readonly products: number;
+  readonly variants: number;
+  readonly searchableUnits: number;
+  readonly orders: number;
+  /** Anything that looked seeded but has real orders against it, and was therefore kept. */
+  readonly keptBecauseOfOrders: string[];
 }
 
 const secrets = new SecretsManagerClient({});
@@ -106,6 +129,7 @@ export async function handler(event: MigrationEvent = {}): Promise<MigrationResu
     }
 
     const backfilled = event.backfill ? await enqueueForEnrichment(sql) : 0;
+    const purged = event.purgeDemo ? await purgeDemoData(sql, Boolean(event.confirm)) : undefined;
 
     return {
       bootstrapped: !event.skipBootstrap,
@@ -113,6 +137,7 @@ export async function handler(event: MigrationEvent = {}): Promise<MigrationResu
       migrationsApplied: true,
       seeded: Boolean(event.seed),
       backfilled,
+      ...(purged ? { purged } : {}),
     };
   } finally {
     await sql.end({ timeout: 5 });
@@ -156,6 +181,83 @@ async function enqueueForEnrichment(sql: postgres.Sql): Promise<number> {
   }
 
   return rows.length;
+}
+
+/** The three merchants `seed()` creates. Fixed ids, so this cannot catch a real one. */
+const DEMO_MERCHANT_IDS = [
+  '11111111-1111-4111-8111-111111111111',
+  '22222222-2222-4222-8222-222222222222',
+  '33333333-3333-4333-8333-333333333333',
+];
+
+/**
+ * Deletes the demo catalogue, so only what merchants uploaded remains.
+ *
+ * Two safeguards, because this cannot be undone from here:
+ *
+ * A **dry run by default** — it says what it would remove and changes nothing until
+ * `confirm` is passed. Getting this wrong deletes a real merchant's catalogue.
+ *
+ * A **merchant with orders is kept**, whatever their id. `orders.merchant_id` has no
+ * cascade on purpose: a buyer's history must not disappear because a merchant row was
+ * removed. If a demo merchant somehow has a real order against it, deleting them would
+ * either fail on the constraint or orphan that history, and neither is acceptable — so it
+ * is reported and skipped.
+ */
+async function purgeDemoData(sql: postgres.Sql, confirm: boolean): Promise<PurgeResult> {
+  const found = (await sql`
+    SELECT m.id::text, m.business_name, m.contact_email,
+           (SELECT COUNT(*)::int FROM orders o WHERE o.merchant_id = m.id) AS order_count
+    FROM merchants m
+    WHERE m.id = ANY(${DEMO_MERCHANT_IDS}::uuid[])
+       OR m.contact_email LIKE '%.example'`) as unknown as {
+    id: string;
+    business_name: string;
+    contact_email: string;
+    order_count: number;
+  }[];
+
+  const deletable = found.filter((m) => m.order_count === 0);
+  const kept = found.filter((m) => m.order_count > 0);
+  const ids = deletable.map((m) => m.id);
+
+  const counts = ids.length
+    ? ((await sql`
+        SELECT
+          (SELECT COUNT(*)::int FROM products WHERE merchant_id = ANY(${ids}::uuid[])) AS products,
+          (SELECT COUNT(*)::int FROM product_variants pv
+             JOIN products p ON p.id = pv.product_id
+            WHERE p.merchant_id = ANY(${ids}::uuid[])) AS variants,
+          (SELECT COUNT(*)::int FROM searchable_units WHERE merchant_id = ANY(${ids}::uuid[])) AS units,
+          (SELECT COUNT(*)::int FROM orders WHERE merchant_id = ANY(${ids}::uuid[])) AS orders
+        `) as unknown as { products: number; variants: number; units: number; orders: number }[])[0]!
+    : { products: 0, variants: 0, units: 0, orders: 0 };
+
+  const result: PurgeResult = {
+    dryRun: !confirm,
+    merchants: deletable.map((m) => ({
+      id: m.id,
+      name: m.business_name,
+      email: m.contact_email,
+    })),
+    products: counts.products,
+    variants: counts.variants,
+    searchableUnits: counts.units,
+    orders: counts.orders,
+    keptBecauseOfOrders: kept.map((m) => `${m.business_name} (${m.order_count} orders)`),
+  };
+
+  if (!confirm || ids.length === 0) return result;
+
+  /**
+   * Deleting the merchant is enough for the catalogue.
+   *
+   * `products`, `product_variants`, `searchable_units`, `merchant_policies` and
+   * `merchant_payment_config` all cascade from it, so one delete removes the whole tree
+   * without a hand-written order that could drift from the schema.
+   */
+  await sql`DELETE FROM merchants WHERE id = ANY(${ids}::uuid[])`;
+  return result;
 }
 
 interface Credentials {
