@@ -143,3 +143,24 @@ export interface SearchLogEntry {
 export interface SearchLogger {
   log(entry: SearchLogEntry): Promise<void>;
 }
+
+/**
+ * Coerces whatever a driver hands back for a timestamp into a real `Date`.
+ *
+ * `sql<Date>` in Drizzle is a type *assertion*, not a runtime conversion, and a raw SQL
+ * fragment — an aggregate like `MAX(updated_at)`, or a hand-written query through the
+ * postgres.js driver — can come back as a string with the type system none the wiser. This
+ * has now caused two production failures whose symptom was `toISOString is not a function`
+ * several layers from the query that produced it.
+ *
+ * Called at the boundary where a row becomes a domain object, so nothing downstream has to
+ * wonder which it got.
+ */
+export function toDate(value: unknown, fallback: Date = new Date()): Date {
+  if (value instanceof Date) return value;
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return fallback;
+}

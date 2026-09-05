@@ -5,6 +5,7 @@ import { ApiStack } from '../stacks/api-stack.js';
 import { DataStack } from '../stacks/data-stack.js';
 import { AuthStack } from '../stacks/auth-stack.js';
 import { FrontendStack } from '../stacks/frontend-stack.js';
+import { McpStack } from '../stacks/mcp-stack.js';
 import { NetworkStack } from '../stacks/network-stack.js';
 import { QueueStack } from '../stacks/queue-stack.js';
 import { WorkerStack } from '../stacks/worker-stack.js';
@@ -85,6 +86,17 @@ const api = new ApiStack(app, stackName('Api', config), {
   merchantPoolClient: auth.merchantClient,
   buyerPool: auth.buyerPool,
   buyerPoolClient: auth.buyerClient,
+});
+
+/**
+ * The MCP server (T2.1). Depends only on the API's URL, so it deploys after the API and
+ * before nothing.
+ */
+new McpStack(app, stackName('Mcp', config), {
+  env,
+  config,
+  apiBaseUrl: api.api.apiEndpoint,
+  buyerAppUrl: process.env.BUYER_APP_URL ?? 'https://main.d1ypcvqs4kcq44.amplifyapp.com',
 });
 
 /**
