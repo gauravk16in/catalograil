@@ -70,8 +70,8 @@ export function buildServer(catalog: CatalogPort, auth?: AuthContext): McpServer
   server.tool(
     'search_products',
     'Find products by need, budget, delivery time, attributes or an image. Returns at most ' +
-      '5 results, each with live price, stock, a delivery estimate, an `image_url` and a ' +
-      '`product_url`. When nothing matches, returns a reason sentence you should state as-is ' +
+      '5 results, each with live price, stock, a delivery estimate, an `image_url`, a ' +
+      '`product_url` and the `variant_id` to buy. When nothing matches, returns a reason sentence you should state as-is ' +
       'rather than explaining away.\n\n' +
       'Results come with a rendered card view. Where that renders, do not restate what is ' +
       'already on screen — add what is not: which one fits what they asked for and why. ' +

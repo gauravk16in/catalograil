@@ -50,11 +50,20 @@ export function ProductCard({
   onBuy,
 }: {
   item: SearchResultItem;
-  onBuy: (choice: { item: SearchResultItem; variantId: string; label: string }) => void;
+  onBuy: (choice: { item: SearchResultItem; variantId?: string; label: string }) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<Detail | null>(null);
-  const [selected, setSelected] = useState<string>(item.id);
+  /**
+   * The variant, not `item.id`.
+   *
+   * `id` identifies the searchable unit that matched; the variant is a different column
+   * that happens to be one-to-one with it. Seeding this with `item.id` sent a unit id to
+   * checkout, which found no such variant and told every buyer the product was no longer
+   * available. Empty means "no variant chosen yet", and checkout resolves it from the
+   * product instead.
+   */
+  const [selected, setSelected] = useState<string>(item.variantId ?? '');
   const [error, setError] = useState<string | null>(null);
 
   /**
@@ -69,11 +78,11 @@ export function ProductCard({
       .post<Detail>('/product', { productId: item.productId })
       .then((d) => {
         setDetail(d);
-        const matched = d.variants.find((v) => v.id === item.id);
-        setSelected((matched ?? d.variants[0])?.id ?? item.id);
+        const matched = d.variants.find((v) => v.id === item.variantId);
+        setSelected((matched ?? d.variants[0])?.id ?? '');
       })
       .catch((err) => setError(describeError(err)));
-  }, [open, detail, item.productId, item.id]);
+  }, [open, detail, item.productId, item.variantId]);
 
   const variant = detail?.variants.find((v) => v.id === selected) ?? null;
   const price = variant?.price_paise ?? item.pricePaise ?? null;
@@ -168,7 +177,11 @@ export function ProductCard({
             type="button"
             disabled={!inStock}
             onClick={() =>
-              onBuy({ item, variantId: selected, label: variantLabel(variant) })
+              onBuy({
+                item,
+                ...(selected ? { variantId: selected } : {}),
+                label: variantLabel(variant),
+              })
             }
             className="flex-1 rounded-xl bg-[hsl(var(--accent))] px-3 py-2 text-[13px] font-semibold text-white transition hover:opacity-90 disabled:opacity-40"
           >

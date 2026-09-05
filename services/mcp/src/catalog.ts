@@ -153,6 +153,7 @@ export class HttpCatalog implements CatalogPort {
 
     return {
       id: String(raw.id ?? ''),
+      variant_id: (raw.variantId as string) ?? null,
       product_id: String(raw.productId ?? ''),
       name: String(raw.name ?? ''),
       brand: (raw.brand as string) ?? null,

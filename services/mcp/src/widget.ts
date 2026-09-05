@@ -149,7 +149,10 @@ ${inlined}
    * A card whose button silently does nothing is the worst of the three.
    */
   function buy(item, button) {
-    var args = { product_id: item.product_id, variant_id: item.id };
+    // The result id is not the variant id. Sending it as one is what made every purchase
+    // fail with "no longer available".
+    var args = { product_id: item.product_id };
+    if (item.variant_id) args.variant_id = item.variant_id;
     var api = window.openai;
     if (api && typeof api.callTool === 'function') {
       button.disabled = true;

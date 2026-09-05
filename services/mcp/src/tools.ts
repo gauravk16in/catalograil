@@ -105,7 +105,7 @@ export const searchProductsSchema = {
 
 export const getProductSchema = {
   product_id: reqString(z.string().uuid()).describe(
-    'The `product_id` from a search result — not its `id`, which is the variant.',
+    'The `product_id` from a search result — not its `id`, which identifies the result.',
   ),
   pincode: optString(z.string().regex(/^[1-9][0-9]{5}$/)),
 };
@@ -125,8 +125,9 @@ export const getMerchantPoliciesSchema = {
 export const createCheckoutSchema = {
   product_id: reqString(z.string().uuid()).describe('The `product_id` from a search result.'),
   variant_id: optString(z.string().uuid()).describe(
-    'Which variant to buy — a search result’s `id`. Required when the product has options, ' +
-      'because a size and colour cannot be inferred from the product alone.',
+    'Which variant to buy — a search result’s `variant_id`, never its `id`. Required when ' +
+      'the product has options, because a size and colour cannot be inferred from the ' +
+      'product alone. Omit it when `variant_id` is null.',
   ),
   quantity: optNumberWithDefault(z.number().int().min(1).max(20), 1),
   buyer_email: optString(z.string().email()),
@@ -146,7 +147,8 @@ export const getOrderStatusSchema = {
 export const placeOrderSchema = {
   product_id: reqString(z.string().uuid()).describe('The `product_id` from a search result.'),
   variant_id: optString(z.string().uuid()).describe(
-    'Which variant — a search result’s `id`. Required when the product has options.',
+    'Which variant — a search result’s `variant_id`, never its `id`. Required when the ' +
+      'product has options; omit it when `variant_id` is null.',
   ),
   quantity: optNumberWithDefault(z.number().int().min(1).max(20), 1),
   address_id: optString(z.string().uuid()).describe(

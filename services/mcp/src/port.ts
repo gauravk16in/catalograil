@@ -54,12 +54,22 @@ export interface CheckoutInput {
 
 export interface McpResult {
   /**
-   * The variant, which is what gets bought. Pass this to `create_checkout`.
+   * The searchable unit that matched — an identifier for *this result*, not for a variant.
    *
-   * D6 makes the variant the searchable unit, so a search for "size 42" matches the size-42
-   * row rather than the product that stocks it.
+   * D6 makes the variant the searchable unit, so the two are one-to-one for a VARIANT
+   * product and it is very easy to assume they are the same value. They are not. This was
+   * documented as the thing to pass to `create_checkout`, and doing so found no such
+   * variant and answered every purchase with "that product is no longer available".
    */
   id: string;
+  /**
+   * The variant to buy, or null when the unit is product-level and there is nothing to pick.
+   *
+   * Separate from `id` deliberately: a caller has to be able to tell "there is no variant"
+   * from "I was not given one", and one nullable field says that where an overloaded one
+   * cannot.
+   */
+  variant_id: string | null;
   /**
    * The product, which is what gets asked about. Pass this to `get_product` and
    * `compare_products`.

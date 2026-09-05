@@ -8,8 +8,17 @@
  * software has no way to check either otherwise.
  */
 export interface SearchResultItem {
-  /** The variant, which is what gets bought. */
+  /**
+   * The searchable unit, which is what got matched — **not** a variant id.
+   *
+   * D6 makes the variant the searchable unit, so the two are one-to-one for a VARIANT
+   * product and it is easy to assume they are the same value. They are not, and passing
+   * this one to checkout produced "That product is no longer available" on every purchase.
+   * Use it as a React key, nothing more.
+   */
   id: string;
+  /** The variant that gets bought, when the unit has one. Absent for product-level units. */
+  variantId?: string;
   /** The product, which is what gets asked about. */
   productId: string;
   name: string;

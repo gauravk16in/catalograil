@@ -44,3 +44,13 @@ describe('the product widget', () => {
     expect(widgetResources()[0]!.uri).toBe(PRODUCT_WIDGET_URI);
   });
 });
+
+describe('the id a purchase is made against', () => {
+  it('buys the variant, not the search result', () => {
+    const html = renderWidget(RESULT);
+    // Regression: the button sent `id` as variant_id, checkout found no such variant, and
+    // every purchase came back as "that product is no longer available".
+    expect(html).toContain('if (item.variant_id) args.variant_id = item.variant_id');
+    expect(html).not.toContain('variant_id: item.id');
+  });
+});

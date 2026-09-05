@@ -29,7 +29,7 @@ export function BuyFlow({
   variantLabel,
 }: {
   item: SearchResultItem;
-  variantId: string;
+  variantId?: string;
   variantLabel: string;
 }) {
   const { status, email: accountEmail } = useAuth();
@@ -65,7 +65,13 @@ export function BuyFlow({
     setNote(null);
 
     try {
-      const sessionId = await openSession({ productId: item.productId, variantId, quantity: 1 });
+      const sessionId = await openSession({
+        productId: item.productId,
+        // Omitted rather than guessed: with no variant chosen, the API resolves the
+        // product's own. Sending a wrong id would sell them something they did not pick.
+        ...(variantId ? { variantId } : {}),
+        quantity: 1,
+      });
       const results = await pay({ sessionId, buyerEmail: email, address: address as ShippingAddress });
       const order = results[0] ?? null;
       setResult(order);
@@ -118,7 +124,7 @@ export function BuyFlow({
               try {
                 const { checkoutUrl } = await api.post<{ checkoutUrl: string }>('/checkout/session', {
                   productId: item.productId,
-                  variantId,
+                  ...(variantId ? { variantId } : {}),
                   quantity: 1,
                 });
                 window.location.href = checkoutUrl;

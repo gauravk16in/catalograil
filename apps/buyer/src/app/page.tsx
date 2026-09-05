@@ -45,7 +45,7 @@ type Turn =
       response?: SearchResponse;
       error?: string;
     }
-  | { kind: 'buy'; id: string; item: SearchResultItem; variantId: string; variantLabel: string };
+  | { kind: 'buy'; id: string; item: SearchResultItem; variantId?: string; variantLabel: string };
 
 const SUGGESTIONS = [
   { label: 'Gift', prompt: 'a thoughtful gift under ₹2,000 for someone who cooks' },
@@ -108,14 +108,14 @@ export default function AskPage() {
   }, []);
 
   const buy = useCallback(
-    (choice: { item: SearchResultItem; variantId: string; label: string }) => {
+    (choice: { item: SearchResultItem; variantId?: string; label: string }) => {
       setTurns((prev) => [
         ...prev,
         {
           kind: 'buy',
           id: nextId(),
           item: choice.item,
-          variantId: choice.variantId,
+          ...(choice.variantId ? { variantId: choice.variantId } : {}),
           variantLabel: choice.label,
         },
       ]);
@@ -199,7 +199,7 @@ function TurnView({
   onRefine,
 }: {
   turn: Turn;
-  onBuy: (choice: { item: SearchResultItem; variantId: string; label: string }) => void;
+  onBuy: (choice: { item: SearchResultItem; variantId?: string; label: string }) => void;
   onRefine: (text: string, filters: Filters) => void;
 }) {
   if (turn.kind === 'ask') {
