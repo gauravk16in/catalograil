@@ -12,6 +12,7 @@ import {
 } from '@catalograil/razorpay';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
+import { reconcileMerchantStatus } from './activation.js';
 
 /**
  * S3.2/S3.3 — connect, verify, and disconnect a merchant's Razorpay account.
@@ -115,6 +116,16 @@ export async function connectPaymentConfig(
         updatedAt: now,
       },
     });
+
+  /**
+   * Connecting payment may be the thing that completes onboarding.
+   *
+   * The two gates are cleared on different screens in either order, so whichever is done
+   * second has to be what flips the merchant live — otherwise a merchant who accepted
+   * policies first and connected payment second would stay pending forever with nothing
+   * telling them why.
+   */
+  await reconcileMerchantStatus(deps.db, merchantId, now);
 
   const summary = await getPaymentConfigSummary(deps.db, merchantId);
   if (!summary) throw new AppError('INTERNAL_ERROR', 'Payment config vanished after writing it.');

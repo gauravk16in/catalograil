@@ -14,7 +14,12 @@ import {
   webhookUrlFor,
   type PaymentConfigDeps,
 } from './handlers/payment-config.js';
-import { KmsTokenCipher } from '@catalograil/razorpay';
+import {
+  ClaudePolicyExtractor,
+  HttpPolicyFetcher,
+  KmsTokenCipher,
+} from '@catalograil/razorpay';
+import { submitPolicies, type PolicyDeps } from './handlers/onboarding.js';
 import {
   catalogueSummary,
   getPipelineStatus,
@@ -239,6 +244,19 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       }
     }
 
+    // ── Policies (T1.9) ─────────────────────────────────────────────────────────
+
+    if (method === 'POST' && path === '/merchant/policies') {
+      /**
+       * The last gate before a merchant goes active.
+       *
+       * The three URLs are fetched and summarised here rather than trusted, because rule 4
+       * snapshots the summary onto every order — a policy we never read is a contract we
+       * cannot show a buyer later.
+       */
+      return json(200, await submitPolicies(policyDeps(), requireMerchantId(event), parseBody(event)));
+    }
+
     // ── Razorpay connection (Block C) ───────────────────────────────────────────
 
     if (path === '/merchant/payment-config') {
@@ -303,6 +321,28 @@ function parseBody(event: APIGatewayProxyEventV2): unknown {
     // round of "the API is down" when a form serialised badly.
     throw new AppError('VALIDATION_FAILED', 'Request body is not valid JSON.');
   }
+}
+
+let cachedPolicyDeps: PolicyDeps | undefined;
+
+/**
+ * Policy dependencies.
+ *
+ * Deliberately narrower than the onboarding set: policies have nothing to do with Razorpay
+ * OAuth, and requiring that config was why this endpoint went unrouted long after the
+ * handler behind it was written and tested. The extractor reaches Claude through the
+ * Lambda's own IAM role on Bedrock — there is no Anthropic key anywhere in this system.
+ */
+function policyDeps(): PolicyDeps {
+  if (!cachedPolicyDeps) {
+    cachedPolicyDeps = {
+      db: getDb(),
+      policyFetcher: new HttpPolicyFetcher(),
+      policyExtractor: new ClaudePolicyExtractor(),
+      clock: systemClock,
+    };
+  }
+  return cachedPolicyDeps;
 }
 
 let cachedPaymentDeps: Omit<PaymentConfigDeps, 'cipherFor'> | undefined;

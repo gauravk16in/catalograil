@@ -78,6 +78,8 @@ export class ApiStack extends Stack {
         DDB_TABLE_QUERY_CACHE: props.queryCacheTable.tableName,
         BEDROCK_REGION: this.region,
         BEDROCK_TEXT_EMBED_MODEL_ID: 'global.cohere.embed-v4:0',
+        // T1.9 reads and summarises a merchant's policy pages through Bedrock.
+        ANTHROPIC_POLICY_MODEL: 'global.anthropic.claude-haiku-4-5-20251001-v1:0',
         KMS_TOKEN_KEY_ID: props.tokenKey.keyId,
       },
     });

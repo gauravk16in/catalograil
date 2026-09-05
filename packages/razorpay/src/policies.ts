@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 import { AppError } from '@catalograil/core';
 
 /**
@@ -115,7 +115,15 @@ export interface PolicyExtractor {
   extract(pages: readonly PolicyFetchResult[]): Promise<ExtractedPolicies>;
 }
 
-const EXTRACTION_MODEL = 'claude-haiku-4-5-20251001';
+/**
+ * The inference profile, not a bare model id.
+ *
+ * Claude on Bedrock refuses on-demand invocation by model id. This ran on the Anthropic SDK
+ * originally, which meant it needed an API key that does not exist anywhere in this system —
+ * the whole platform authenticates to models through the Lambda's IAM role. Extraction is
+ * short structured work over a few pages of boilerplate, which is what Haiku is for.
+ */
+const EXTRACTION_MODEL = 'global.anthropic.claude-haiku-4-5-20251001-v1:0';
 
 const EXTRACTION_PROMPT = `You read merchant policy pages and extract the facts a buyer needs before purchasing.
 
@@ -140,10 +148,17 @@ Rules:
 Never infer a number that is not stated. A wrong return window is worse than a missing one, because a buyer will rely on it and a snapshot of it becomes their contract.`;
 
 export class ClaudePolicyExtractor implements PolicyExtractor {
-  private readonly client: Anthropic;
+  private readonly client: BedrockRuntimeClient;
 
-  constructor(private readonly model = process.env.ANTHROPIC_POLICY_MODEL ?? EXTRACTION_MODEL) {
-    this.client = new Anthropic({});
+  constructor(
+    private readonly model = process.env.ANTHROPIC_POLICY_MODEL ?? EXTRACTION_MODEL,
+    client?: BedrockRuntimeClient,
+  ) {
+    this.client =
+      client ??
+      new BedrockRuntimeClient(
+        process.env.BEDROCK_REGION ? { region: process.env.BEDROCK_REGION } : {},
+      );
   }
 
   async extract(pages: readonly PolicyFetchResult[]): Promise<ExtractedPolicies> {
@@ -152,26 +167,52 @@ export class ClaudePolicyExtractor implements PolicyExtractor {
       throw new AppError('POLICY_EXTRACTION_FAILED', 'No readable policy pages to extract from.');
     }
 
-    const response = await this.client.messages.create({
-      model: this.model,
-      max_tokens: 2048,
-      system: EXTRACTION_PROMPT,
-      messages: [
-        {
-          role: 'user',
-          content: usable
-            // Truncated because policy pages are often a whole site's boilerplate, and the
-            // relevant terms are near the top.
-            .map((page) => `## ${page.kind} policy (${page.url})\n\n${page.text!.slice(0, 12_000)}`)
-            .join('\n\n'),
-        },
-        { role: 'assistant', content: '{' },
-      ],
-    });
+    const response = await this.client.send(
+      new InvokeModelCommand({
+        modelId: this.model,
+        contentType: 'application/json',
+        accept: 'application/json',
+        body: JSON.stringify({
+          // Bedrock's Claude requires this version field; omitting it is rejected.
+          anthropic_version: 'bedrock-2023-05-31',
+          max_tokens: 2048,
+          system: EXTRACTION_PROMPT,
+          messages: [
+            {
+              role: 'user',
+              content: usable
+                // Truncated because policy pages are often a whole site's boilerplate, and
+                // the relevant terms are near the top.
+                .map(
+                  (page) => `## ${page.kind} policy (${page.url})\n\n${page.text!.slice(0, 12_000)}`,
+                )
+                .join('\n\n'),
+            },
+            // Prefilling the opening brace removes the most common failure mode: valid JSON
+            // wrapped in a sentence of explanation.
+            { role: 'assistant', content: '{' },
+          ],
+        }),
+      }),
+    );
 
-    const text = response.content
-      .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-      .map((block) => block.text)
+    const parsed = JSON.parse(new TextDecoder().decode(response.body)) as {
+      content?: { type: string; text?: string }[];
+      stop_reason?: string;
+    };
+
+    if (parsed.stop_reason === 'max_tokens') {
+      // Truncation is not a parse failure, and saying so points at the limit rather than
+      // sending someone to read the parser.
+      throw new AppError(
+        'POLICY_EXTRACTION_FAILED',
+        'The extractor hit its token ceiling and returned a truncated answer.',
+      );
+    }
+
+    const text = (parsed.content ?? [])
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text ?? '')
       .join('');
 
     return parseExtraction(`{${text}`);
