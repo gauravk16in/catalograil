@@ -14,6 +14,7 @@ import {
   type SessionDeps,
 } from './handlers/session.js';
 import { createOrders } from './handlers/checkout.js';
+import { confirmPayment } from './handlers/confirm.js';
 import { KmsTokenCipher as Cipher } from '@catalograil/razorpay';
 import {
   createAddress,
@@ -135,6 +136,41 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
             shippingAddress: body.shippingAddress,
             sessionId: body.sessionId,
             source: 'web',
+          },
+        ),
+      );
+    }
+
+    /**
+     * The browser's confirmation after Razorpay Checkout succeeds.
+     *
+     * Open at the gateway like the rest of `/checkout/*`, because a guest pays too. What
+     * authorises it is Razorpay's own signature over `order_id|payment_id`, checked against
+     * the merchant's key secret — a caller who merely knows an order id cannot forge it.
+     */
+    if (method === 'POST' && path === '/checkout/confirm') {
+      const body = parseBody(event) as {
+        orderId?: string;
+        razorpayPaymentId?: string;
+        razorpayOrderId?: string;
+        razorpaySignature?: string;
+      };
+      if (!body.orderId || !body.razorpayPaymentId || !body.razorpayOrderId || !body.razorpaySignature) {
+        throw new AppError('VALIDATION_FAILED', 'The payment confirmation is incomplete.');
+      }
+      return json(
+        200,
+        await confirmPayment(
+          {
+            db: db(),
+            clock: systemClock,
+            cipherFor: (id) => new Cipher(required('KMS_TOKEN_KEY_ID'), id),
+          },
+          {
+            orderId: body.orderId,
+            razorpayPaymentId: body.razorpayPaymentId,
+            razorpayOrderId: body.razorpayOrderId,
+            razorpaySignature: body.razorpaySignature,
           },
         ),
       );

@@ -29,6 +29,8 @@ interface OrderRow {
 interface OrderDetail extends OrderRow {
   shippingAddress?: Record<string, string>;
   razorpayPaymentId?: string | null;
+  razorpayOrderId?: string | null;
+  razorpayDashboardUrl?: string | null;
   items: {
     id: string;
     nameSnapshot: string;
@@ -223,6 +225,44 @@ export default function OrdersPage() {
               {(ACTIONS[selected.status] ?? []).length === 0 && (
                 <p className="text-sm text-[hsl(var(--muted))]">
                   Nothing left to do — this order is {selected.status}.
+                </p>
+              )}
+            </div>
+
+            {/*
+              Payment first, because it is the first thing a merchant checks — "has this
+              actually been paid, and where is it?" — and because seeing their own Razorpay
+              payment id is what makes "paid into your account" concrete rather than a claim.
+            */}
+            <div className="rounded-lg bg-[hsl(var(--accent-soft))] px-4 py-3">
+              <h3 className="text-sm font-medium">Payment</h3>
+              {selected.razorpayPaymentId ? (
+                <>
+                  <p className="mt-1 text-sm">
+                    Paid into your Razorpay account ·{' '}
+                    <span className="font-mono text-xs">{selected.razorpayPaymentId}</span>
+                  </p>
+                  {selected.razorpayDashboardUrl && (
+                    <a
+                      href={selected.razorpayDashboardUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-1 inline-block text-sm underline"
+                    >
+                      Open it in your Razorpay dashboard
+                    </a>
+                  )}
+                </>
+              ) : (
+                <p className="mt-1 text-sm text-[hsl(var(--muted))]">
+                  {selected.status === 'awaiting_payment'
+                    ? 'Not paid yet. The buyer has been given a payment link; stock is held for twenty minutes.'
+                    : 'No payment recorded against this order.'}
+                </p>
+              )}
+              {selected.razorpayOrderId && (
+                <p className="mt-1 text-xs text-[hsl(var(--muted))]">
+                  Razorpay order {selected.razorpayOrderId}
                 </p>
               )}
             </div>
