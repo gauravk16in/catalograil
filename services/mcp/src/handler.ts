@@ -5,7 +5,7 @@ import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoRateLimiter, failOpen, type RateLimiter } from '@catalograil/aws';
 import { HttpCatalog } from './catalog.js';
-import { buildServer, type AuthContext } from './server.js';
+import { TOOL_META, buildServer, type AuthContext } from './server.js';
 import {
   TokenVerifier,
   authorizationServerMetadata,
@@ -18,6 +18,7 @@ import {
 } from './oauth.js';
 import { z } from 'zod';
 import { SERVER_DESCRIPTION } from './tools.js';
+import { PRODUCT_WIDGET_URI, renderWidget, widgetResources } from './widget.js';
 
 const logger = new Logger({ serviceName: 'mcp' });
 
@@ -325,7 +326,9 @@ async function dispatch(request: JsonRpcRequest, auth: AuthContext): Promise<unk
     case 'initialize':
       return {
         protocolVersion: '2024-11-05',
-        capabilities: { tools: {} },
+        // `resources` is not decoration: a host will not fetch the widget template it was
+        // told about in a tool's meta unless the server admits to serving resources.
+        capabilities: { tools: {}, resources: { listChanged: false } },
         serverInfo: { name: 'catalograil', version: '0.1.0' },
         instructions: SERVER_DESCRIPTION,
       };
@@ -335,6 +338,34 @@ async function dispatch(request: JsonRpcRequest, auth: AuthContext): Promise<unk
 
     case 'tools/list':
       return { tools: listTools(server) };
+
+    /**
+     * The widget template, served as a resource.
+     *
+     * ChatGPT reads the URI from a tool's `openai/outputTemplate` and fetches it here once,
+     * before any tool has run — so this copy carries no data and reads it from
+     * `window.openai.toolOutput` at render time instead.
+     */
+    case 'resources/list':
+      return { resources: widgetResources() };
+
+    case 'resources/templates/list':
+      return { resourceTemplates: [] };
+
+    case 'resources/read': {
+      const uri = (request.params as { uri?: string } | undefined)?.uri;
+      if (uri !== PRODUCT_WIDGET_URI) throw new Error(`Unknown resource: ${uri}`);
+      return {
+        contents: [
+          {
+            uri: PRODUCT_WIDGET_URI,
+            mimeType: 'text/html+skybridge',
+            text: renderWidget(null),
+            _meta: { 'openai/widgetPrefersBorder': false },
+          },
+        ],
+      };
+    }
 
     case 'tools/call': {
       const params = (request.params ?? {}) as { name?: string; arguments?: Record<string, unknown> };
@@ -357,6 +388,7 @@ function listTools(server: ReturnType<typeof buildServer>): unknown[] {
 
   return Object.entries(registered).map(([name, tool]) => ({
     name,
+    ...(TOOL_META[name] ? { _meta: TOOL_META[name] } : {}),
     description: tool.description,
     inputSchema: toJsonSchema(tool.inputSchema),
   }));

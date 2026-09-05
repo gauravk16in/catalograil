@@ -107,6 +107,34 @@ export default function BuyerSearch() {
   }, [filters, run]);
 
   /**
+   * `?product=<id>` opens straight to that product.
+   *
+   * This is the link an assistant hands out alongside a search result — a buyer being shown
+   * a card inside Claude needs somewhere to go that shows them the same item, the merchant's
+   * own policy text and a way to pay, without making them search again for the thing they
+   * were just looking at.
+   *
+   * A stub is enough to open the panel: it fetches the real detail from `productId` itself,
+   * and having no variant id simply means it defaults to the first one rather than the
+   * matched one.
+   */
+  useEffect(() => {
+    const productId = new URLSearchParams(window.location.search).get('product');
+    if (!productId) return;
+
+    setOpened({
+      id: '',
+      productId,
+      name: '',
+      priceAsOf: new Date().toISOString(),
+      availability: 'unknown',
+      images: [],
+      whyThisMatched: '',
+      merchant: { id: '', name: '', trust: { score: 0, newMerchant: true, signals: [] } },
+    });
+  }, []);
+
+  /**
    * Arrow keys move through results, Enter opens one.
    *
    * Someone comparing four shirts should not have to move their hand to the mouse between
