@@ -38,8 +38,14 @@ export default function SignupPage() {
         : contact.trim();
 
     try {
-      await signUp(username, password, name.trim());
-      router.push(`/verify?u=${encodeURIComponent(username)}`);
+      const { confirmed, signedIn } = await signUp(username, password, name.trim());
+      // A pool that needs no code signs them in here, so they go straight back to shopping
+      // rather than to a login form asking for the password typed a second ago.
+      if (!confirmed) {
+        router.push(`/verify?u=${encodeURIComponent(username)}`);
+        return;
+      }
+      router.push(signedIn ? '/' : '/login');
     } catch (err) {
       setError(describeAuthError(err));
     } finally {

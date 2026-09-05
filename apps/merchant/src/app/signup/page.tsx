@@ -20,8 +20,14 @@ export default function SignupPage() {
     setBusy(true);
     setError(null);
     try {
-      const { confirmed } = await signUp(email.trim(), password, businessName.trim());
-      router.push(confirmed ? '/login' : `/verify-email?email=${encodeURIComponent(email.trim())}`);
+      const { confirmed, signedIn } = await signUp(email.trim(), password, businessName.trim());
+      // A pool that needs no code signs them in here, so they go straight to setting up
+      // rather than to a login form asking for the password typed a second ago.
+      if (!confirmed) {
+        router.push(`/verify-email?email=${encodeURIComponent(email.trim())}`);
+        return;
+      }
+      router.push(signedIn ? '/onboarding' : '/login');
     } catch (err) {
       setError(describeAuthError(err));
     } finally {

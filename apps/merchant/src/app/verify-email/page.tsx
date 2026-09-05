@@ -20,8 +20,15 @@ function VerifyEmail() {
     setBusy(true);
     setError(null);
     try {
-      await confirmSignUp(email.trim(), code.trim());
-      router.push('/login');
+      const { signedIn } = await confirmSignUp(email.trim(), code.trim());
+      /**
+       * Signed in by the time this resolves, so the destination is the dashboard.
+       *
+       * If the automatic sign-in could not be completed — an expired sign-up session, or a
+       * code confirmed on a different device than it was requested from — the login page is
+       * where they land instead, and it is a normal sign-in rather than an error.
+       */
+      router.push(signedIn ? '/onboarding' : '/login');
     } catch (err) {
       setError(describeAuthError(err));
     } finally {

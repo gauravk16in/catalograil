@@ -105,7 +105,22 @@ export class AuthStack extends Stack {
        * secret, and Cognito's SRP flow is designed for exactly this case.
        */
       generateSecret: false,
-      authFlows: { userSrp: true, custom: false, userPassword: false, adminUserPassword: false },
+      /**
+       * SRP, plus choice-based auth for the automatic sign-in after sign-up.
+       *
+       * `ALLOW_USER_AUTH` is what lets Cognito exchange the session it hands back from
+       * ConfirmSignUp for tokens, which is how someone who has just proved they own their
+       * email lands signed in instead of on a login form asking for the password they typed
+       * a minute ago. It grants no flow a password alone can reach — `userPassword` and the
+       * admin flows stay off.
+       */
+      authFlows: {
+        userSrp: true,
+        user: true,
+        custom: false,
+        userPassword: false,
+        adminUserPassword: false,
+      },
       accessTokenValidity: Duration.hours(1),
       idTokenValidity: Duration.hours(1),
       refreshTokenValidity: Duration.days(30),
@@ -148,7 +163,22 @@ export class AuthStack extends Stack {
     this.buyerClient = this.buyerPool.addClient('BuyerWebClient', {
       userPoolClientName: `${config.resourcePrefix}-${config.name}-buyer-web`,
       generateSecret: false,
-      authFlows: { userSrp: true, custom: false, userPassword: false, adminUserPassword: false },
+      /**
+       * SRP, plus choice-based auth for the automatic sign-in after sign-up.
+       *
+       * `ALLOW_USER_AUTH` is what lets Cognito exchange the session it hands back from
+       * ConfirmSignUp for tokens, which is how someone who has just proved they own their
+       * email lands signed in instead of on a login form asking for the password they typed
+       * a minute ago. It grants no flow a password alone can reach — `userPassword` and the
+       * admin flows stay off.
+       */
+      authFlows: {
+        userSrp: true,
+        user: true,
+        custom: false,
+        userPassword: false,
+        adminUserPassword: false,
+      },
       accessTokenValidity: Duration.hours(1),
       idTokenValidity: Duration.hours(1),
       refreshTokenValidity: Duration.days(30),

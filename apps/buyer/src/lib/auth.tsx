@@ -2,6 +2,7 @@
 
 import { Amplify } from 'aws-amplify';
 import {
+  autoSignIn,
   confirmSignUp,
   confirmResetPassword,
   fetchAuthSession,
@@ -53,8 +54,12 @@ export interface AuthState {
 
 interface AuthContextValue extends AuthState {
   signIn(email: string, password: string): Promise<void>;
-  signUp(email: string, password: string, name: string): Promise<{ confirmed: boolean }>;
-  confirmSignUp(email: string, code: string): Promise<void>;
+  signUp(
+    email: string,
+    password: string,
+    name: string,
+  ): Promise<{ confirmed: boolean; signedIn: boolean }>;
+  confirmSignUp(email: string, code: string): Promise<{ signedIn: boolean }>;
   resendCode(email: string): Promise<void>;
   forgotPassword(email: string): Promise<void>;
   resetPassword(email: string, code: string, password: string): Promise<void>;
@@ -119,6 +124,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => setTokenRefresher(null);
   }, [refresh]);
 
+  /**
+   * Finishes the sign-in Cognito is holding open, and tolerates it being unavailable.
+   *
+   * `autoSignIn` can legitimately have nothing to complete — the sign-up session expires,
+   * or the account was confirmed from a different device than it was created on. That is a
+   * reason to show the login form, not an error to put in front of someone who has just
+   * successfully created an account.
+   */
+  const completeAutoSignIn = useCallback(async (): Promise<boolean> => {
+    try {
+      const result = await autoSignIn();
+      return result.isSignedIn === true;
+    } catch {
+      // Left signed out. The caller routes to the login form, which is a normal next step
+      // rather than a failure to report.
+      return false;
+    }
+  }, []);
+
   const value = useMemo<AuthContextValue>(
     () => ({
       ...state,
@@ -132,13 +156,54 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const result = await signUp({
           username: email,
           password,
-          options: { userAttributes: { email, name } },
+          options: {
+            userAttributes: { email, name },
+            /**
+             * Cognito keeps the sign-up session open so the account can be signed in the
+             * moment it is confirmed.
+             *
+             * The alternative is holding the password in component state across a page
+             * navigation and replaying it — which works, and puts a plaintext password in a
+             * React tree for as long as someone takes to read a verification email. This
+             * asks the identity provider to do it instead, and nothing has to keep the
+             * password at all.
+             */
+            autoSignIn: true,
+          },
         });
-        return { confirmed: result.isSignUpComplete };
+
+        if (!result.isSignUpComplete) return { confirmed: false, signedIn: false };
+
+        const signedIn = await completeAutoSignIn();
+        await refresh();
+        return { confirmed: true, signedIn };
       },
+      /**
+       * Confirming the code is the last thing anyone should have to type.
+       *
+       * Sending someone to a login form immediately after they proved they own the address
+       * asks them to re-enter the two things they just entered, and is where a good share
+       * of people close the tab. The verification itself stays — it is the only evidence
+       * the address is theirs — but it now ends signed in.
+       */
       async confirmSignUp(email, code) {
         configure();
-        await confirmSignUp({ username: email, confirmationCode: code });
+        const result = await confirmSignUp({ username: email, confirmationCode: code });
+
+        const signedIn =
+          result.nextStep?.signUpStep === 'COMPLETE_AUTO_SIGN_IN'
+            ? await completeAutoSignIn()
+            : false;
+
+        await refresh();
+        /**
+         * Returned rather than read from `status` by the caller.
+         *
+         * `refresh` sets React state, which the component that awaited this cannot see until
+         * it re-renders — so a page reading `status` here would route on the value from
+         * before the sign-in, every time.
+         */
+        return { signedIn };
       },
       async resendCode(email) {
         configure();
@@ -165,7 +230,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       },
       refresh,
     }),
-    [state, refresh],
+    [state, refresh, completeAutoSignIn],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
