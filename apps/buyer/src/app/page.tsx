@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { api, describeError } from '../lib/api';
 import { formatPaise, relativeTime } from '../lib/format';
 import { Badge, Button, Card, Empty, ErrorNote, inputClass } from '../components/ui';
+import { ProductImage } from '../components/product-image';
+import { ProductDetail } from '../components/product-detail';
 
 /**
  * The buyer-facing search surface.
@@ -17,8 +19,10 @@ import { Badge, Button, Card, Empty, ErrorNote, inputClass } from '../components
  * matched — because a buyer being answered by an AI has no way to check either otherwise.
  */
 
-interface SearchResultItem {
+export interface SearchResultItem {
   id: string;
+  /** The product, for opening detail. `id` is the variant, which is what gets bought. */
+  productId: string;
   name: string;
   brand?: string;
   displayPrice?: string;
@@ -54,6 +58,7 @@ export default function BuyerSearch() {
   const [response, setResponse] = useState<SearchResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [opened, setOpened] = useState<SearchResultItem | null>(null);
 
   async function run(value: string) {
     if (!value.trim()) return;
@@ -121,6 +126,8 @@ export default function BuyerSearch() {
 
       {error && <ErrorNote>{error}</ErrorNote>}
 
+      {opened && <ProductDetail result={opened} onClose={() => setOpened(null)} />}
+
       {response &&
         (response.results.length === 0 ? (
           <Card>
@@ -133,7 +140,7 @@ export default function BuyerSearch() {
               {response.results.length} results in {response.tookMs}ms
             </p>
             {response.results.map((result) => (
-              <ResultCard key={result.id} result={result} />
+              <ResultCard key={result.id} result={result} onOpen={setOpened} />
             ))}
           </div>
         ))}
@@ -141,10 +148,31 @@ export default function BuyerSearch() {
   );
 }
 
-function ResultCard({ result }: { result: SearchResultItem }) {
+function ResultCard({
+  result,
+  onOpen,
+}: {
+  result: SearchResultItem;
+  onOpen: (result: SearchResultItem) => void;
+}) {
   return (
-    <Card className="p-5">
-      <div className="flex items-start gap-4">
+    /*
+      The whole card is the target, not a link buried in the title.
+      A buyer scanning results taps the picture or the price as readily as the name, and a
+      card that only responds in one place reads as not responding at all.
+    */
+    <Card className="overflow-hidden transition hover:border-[hsl(var(--fg))]">
+      <button
+        type="button"
+        onClick={() => onOpen(result)}
+        className="flex w-full items-start gap-4 p-5 text-left"
+      >
+        <ProductImage
+          src={result.images?.[0]}
+          alt={result.name}
+          className="h-24 w-24 shrink-0 rounded-lg"
+        />
+
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-sm font-medium">{result.name}</h2>
@@ -190,7 +218,7 @@ function ResultCard({ result }: { result: SearchResultItem }) {
             price as of {relativeTime(result.priceAsOf)}
           </p>
         </div>
-      </div>
+      </button>
     </Card>
   );
 }

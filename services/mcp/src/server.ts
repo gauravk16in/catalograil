@@ -58,9 +58,10 @@ export function buildServer(catalog: CatalogPort): McpServer {
 
   server.tool(
     'get_merchant_policies',
-    'A merchant’s refund, terms and fulfillment policies, summarised from their own published ' +
-      'pages, with the source URLs and when they were last checked. Answer policy questions ' +
-      'from this tool only — never infer or generalise a policy.',
+    'A merchant’s refund, terms and fulfillment policies: a short summary, the merchant’s ' +
+      'own full text, and when it was last checked. Answer every policy question from this ' +
+      'tool alone. Quote or paraphrase the `text` for anything the `summary` does not cover — ' +
+      'and if neither says, say that it does not, rather than reasoning about what is likely.',
     getMerchantPoliciesSchema,
     async (input) => json(await catalog.getPolicies(input)),
   );

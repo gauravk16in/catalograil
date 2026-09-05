@@ -143,11 +143,35 @@ export async function getPolicySummaries(
 
   if (!row) throw new AppError('NOT_FOUND', 'This merchant has no policies on file.');
 
+  /**
+   * The full text alongside the summary.
+   *
+   * A summary answers "how long do I have to return this". Only the text answers "does that
+   * apply to sale items" or "who pays if it arrives damaged" — and those are the questions
+   * a buyer actually asks before paying. Given only a summary a model must refuse or invent,
+   * and inventing a policy term is the worst thing it can do on this surface.
+   *
+   * Truncated, because a terms page can be tens of thousands of characters and the model
+   * pays for every one of them on every call.
+   */
+  const clip = (text: string | null) => (text ? text.slice(0, 6000) : null);
+
   return {
     merchant_id: merchantId,
-    refund: { summary: row.refundSummary, url: row.refundUrl },
-    terms: { summary: row.termsSummary, url: row.termsUrl },
-    fulfillment: { summary: row.fulfillmentSummary, url: row.fulfillmentUrl },
+    refund: { summary: row.refundSummary, text: clip(row.refundText), url: row.refundUrl },
+    terms: { summary: row.termsSummary, text: clip(row.termsText), url: row.termsUrl },
+    fulfillment: {
+      summary: row.fulfillmentSummary,
+      text: clip(row.fulfillmentText),
+      url: row.fulfillmentUrl,
+    },
+    /**
+     * Whether the merchant published these or wrote them here.
+     *
+     * A model citing a policy should be able to say "their published refund page says" or
+     * "the seller states", and those are different claims.
+     */
+    source: row.source,
     return_window_days: row.returnWindowDays,
     return_shipping_by: row.returnShippingBy,
     dispatch_sla_hours: row.dispatchSlaHours,
