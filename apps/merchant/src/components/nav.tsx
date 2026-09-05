@@ -13,6 +13,7 @@ const LINKS = [
   { href: '/policies', label: 'Policies' },
   { href: '/preview', label: 'Preview in AI' },
   { href: '/settings/payments', label: 'Payments' },
+  { href: '/settings/profile', label: 'Profile' },
 ];
 
 export function Nav() {

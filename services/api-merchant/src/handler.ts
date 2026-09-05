@@ -20,6 +20,7 @@ import {
   KmsTokenCipher,
 } from '@catalograil/razorpay';
 import { submitPolicies, type PolicyDeps } from './handlers/onboarding.js';
+import { getProfile, updateProfile, type ProfileDeps } from './handlers/profile.js';
 import {
   listSiteImports,
   startSiteImport,
@@ -58,6 +59,13 @@ function deps(): UploadDeps {
     };
   }
   return cached;
+}
+
+let cachedProfileDeps: ProfileDeps | undefined;
+
+function profileDeps(): ProfileDeps {
+  if (!cachedProfileDeps) cachedProfileDeps = { db: getDb(), clock: systemClock };
+  return cachedProfileDeps;
 }
 
 let cachedSiteImportDeps: SiteImportDeps | undefined;
@@ -150,6 +158,14 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
     if (method === 'GET' && path === '/merchant/me') {
       return json(200, await getSession(deps().db, requireMerchantId(event)));
+    }
+
+    if (path === '/merchant/profile') {
+      const merchantId = requireMerchantId(event);
+      if (method === 'GET') return json(200, await getProfile(deps().db, merchantId));
+      if (method === 'PATCH') {
+        return json(200, await updateProfile(profileDeps(), merchantId, parseBody(event)));
+      }
     }
 
     if (method === 'GET' && path === '/merchant/products') {
